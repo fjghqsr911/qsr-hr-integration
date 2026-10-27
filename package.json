@@ -1,0 +1,29 @@
+{
+  "name": "hrint-api",
+  "version": "0.1.0",
+  "description": "QSR Group HR integrations API (UKG Pro) - Azure Functions, Node v4 model",
+  "main": "dist/src/functions/*.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "clean": "rimraf dist",
+    "prestart": "npm run clean && npm run build",
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/functions": "^4.5.0",
+    "@azure/identity": "^4.13.3",
+    "mssql": "^12.7.4"
+  },
+  "devDependencies": {
+    "@types/mssql": "^12.3.0",
+    "@types/node": "^22.0.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

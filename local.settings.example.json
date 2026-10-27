@@ -1,0 +1,26 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsStorage": "",
+    "UKG_BASE_URL": "https://service3.ultipro.ca",
+    "UKG_USERNAME": "<service-account-username>",
+    "UKG_PASSWORD": "<service-account-password>",
+    "UKG_CUSTOMER_API_KEY": "<customer-api-key>",
+
+    "ALLOW_LOCAL_NO_AUTH": "true",
+    "LOCAL_ROLES": "Summary.Read",
+    "LOCAL_SCOPES": "Employees.Summary.Read",
+
+    "HUB_SQL_SERVER": "sql-qsr-prod-cc.database.windows.net",
+    "HUB_SQL_DATABASE": "sqldb-hrint",
+    "HUB_LOOKBACK_MONTHS": "24",
+    "HUB_SYNC_ENABLED": "false",
+
+    "AUDIT_STORAGE_ACCOUNT": "",
+    "AUDIT_TABLE": "AccessAudit"
+  },
+  "Host": {
+    "CORS": "*"
+  }
+}
