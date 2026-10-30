@@ -10,7 +10,7 @@
 IF SCHEMA_ID('out') IS NULL  EXEC('CREATE SCHEMA [out]');
 IF SCHEMA_ID('xref') IS NULL EXEC('CREATE SCHEMA xref');
 
-/* ---- ref: what each destination takes, what it calls things, and which stores are on ---- */
+/* ref: what each destination takes, what it calls things, and which stores are on */
 IF OBJECT_ID('ref.destination_events', 'U') IS NULL
     CREATE TABLE ref.destination_events (
         destination  varchar(20) NOT NULL CONSTRAINT ck_destination_events_dest CHECK (destination IN ('clearview', 'rosnet')),
@@ -37,7 +37,7 @@ IF OBJECT_ID('ref.store_modes', 'U') IS NULL
         changed_by   nvarchar(200) NULL,
         CONSTRAINT pk_store_modes PRIMARY KEY (destination, store));
 
-/* ---- out: the queue, the no-change check, masked shadow payloads ---- */
+/* out: the queue, the no-change check, masked shadow payloads */
 IF OBJECT_ID('out.deliveries', 'U') IS NULL
     CREATE TABLE [out].deliveries (
         delivery_id      bigint IDENTITY(1,1) NOT NULL CONSTRAINT pk_deliveries PRIMARY KEY,
@@ -85,7 +85,7 @@ IF OBJECT_ID('out.shadow_payloads', 'U') IS NULL
         payload       nvarchar(max) NOT NULL,
         built_utc     datetime2(0)  NOT NULL CONSTRAINT df_shadow_payloads_built DEFAULT SYSUTCDATETIME());
 
-/* ---- xref: who each employee is at each destination. Keyed on the UKG employee ID; never purged. ---- */
+/* xref: who each employee is at each destination. Keyed on the UKG employee ID; never purged. */
 IF OBJECT_ID('xref.employees', 'U') IS NULL
     CREATE TABLE xref.employees (
         destination  varchar(20)  NOT NULL CONSTRAINT ck_xref_employees_dest CHECK (destination IN ('clearview', 'rosnet')),
@@ -99,7 +99,7 @@ IF OBJECT_ID('xref.employees', 'U') IS NULL
         CONSTRAINT pk_xref_employees PRIMARY KEY (destination, employee_id),
         CONSTRAINT ux_xref_employees_external UNIQUE (destination, external_id));
 
-/* ---- seed: which events each destination takes (plan: Delivery design). Added only if missing. ----
+/* seed: which events each destination takes (plan: Delivery design). Added only if missing.
    Not seeded (open decisions): leave of absence / return; Rosnet pay; Rosnet Additional company / Company record ended. */
 INSERT INTO ref.destination_events (destination, event_type, action)
 SELECT s.destination, s.event_type, s.action
