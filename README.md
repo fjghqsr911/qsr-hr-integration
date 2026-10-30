@@ -115,6 +115,11 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `13-delivery-tables.sql` | Delivery design tables: `ref.destination_events` (seeded), `ref.destination_codes`, `ref.store_modes` (no row = off), `out.deliveries`, `out.last_sent`, `out.shadow_payloads`, `xref.employees` (never purged) |
 | `14-check-deliveries.sql` | Dry run of the delivery queue for one store in shadow, rolled back; a second rebuild must queue nothing |
 
+13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
+is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
+rolled-back transaction, deletes and rebuilds that store's employees' events so they queue as new, and must queue nothing on
+a second rebuild.
+
 Run 10, 11, 12 in order, review 12's result, then run the full build. Run 13 before re-running 11 (11 queues deliveries
 once 13's tables exist; with every store off it queues nothing). Connectors and the delivery queue use `event_key`, never `event_id`.
 
