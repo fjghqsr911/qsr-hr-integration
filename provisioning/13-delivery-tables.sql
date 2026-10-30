@@ -14,8 +14,8 @@ IF SCHEMA_ID('xref') IS NULL EXEC('CREATE SCHEMA xref');
 IF OBJECT_ID('ref.destination_events', 'U') IS NULL
     CREATE TABLE ref.destination_events (
         destination  varchar(20) NOT NULL CONSTRAINT ck_destination_events_dest CHECK (destination IN ('clearview', 'rosnet')),
-        event_type   varchar(40) NOT NULL,                  -- rpt.workforce_events.event_type
-        action       varchar(30) NOT NULL,                  -- what the connector does: create, terminate, store, job, pay, update
+        event_type   varchar(40) NOT NULL,                  /* rpt.workforce_events.event_type */
+        action       varchar(30) NOT NULL,                  /* what the connector does: create, terminate, store, job, pay, update */
         CONSTRAINT pk_destination_events PRIMARY KEY (destination, event_type));
 
 IF OBJECT_ID('ref.destination_codes', 'U') IS NULL
@@ -31,7 +31,7 @@ IF OBJECT_ID('ref.destination_codes', 'U') IS NULL
 IF OBJECT_ID('ref.store_modes', 'U') IS NULL
     CREATE TABLE ref.store_modes (
         destination  varchar(20)   NOT NULL CONSTRAINT ck_store_modes_dest CHECK (destination IN ('clearview', 'rosnet')),
-        store        varchar(20)   NOT NULL,                -- UKG store code (org level 2), e.g. T00037
+        store        varchar(20)   NOT NULL,                /* UKG store code (org level 2), e.g. T00037 */
         mode         varchar(10)   NOT NULL CONSTRAINT ck_store_modes_mode CHECK (mode IN ('off', 'shadow', 'live')),
         changed_utc  datetime2(0)  NOT NULL CONSTRAINT df_store_modes_changed DEFAULT SYSUTCDATETIME(),
         changed_by   nvarchar(200) NULL,
@@ -42,14 +42,14 @@ IF OBJECT_ID('out.deliveries', 'U') IS NULL
     CREATE TABLE [out].deliveries (
         delivery_id      bigint IDENTITY(1,1) NOT NULL CONSTRAINT pk_deliveries PRIMARY KEY,
         destination      varchar(20)   NOT NULL,
-        event_key        binary(32)    NOT NULL,            -- rpt.workforce_events.event_key
-        version          int           NOT NULL,            -- 1, then +1 each time the event changes in a way that matters
+        event_key        binary(32)    NOT NULL,            /* rpt.workforce_events.event_key */
+        version          int           NOT NULL,            /* 1, then +1 each time the event changes in a way that matters */
         kind             varchar(10)   NOT NULL CONSTRAINT ck_deliveries_kind CHECK (kind IN ('event', 'removed')),
         employee_id      varchar(20)   NOT NULL,
         event_type       varchar(40)   NOT NULL,
         action           varchar(30)   NULL,
         effective_date   date          NOT NULL,
-        store            varchar(20)   NULL,                -- the shadow / live store that queued it
+        store            varchar(20)   NULL,                /* the shadow / live store that queued it */
         status           varchar(20)   NOT NULL CONSTRAINT df_deliveries_status DEFAULT 'pending'
                          CONSTRAINT ck_deliveries_status CHECK (status IN
                            ('pending', 'sent', 'unchanged', 'shadow', 'failed', 'dead', 'superseded', 'review', 'resolved')),
@@ -59,7 +59,7 @@ IF OBJECT_ID('out.deliveries', 'U') IS NULL
         finished_utc     datetime2(0)  NULL,
         mode_at_send     varchar(10)   NULL,
         payload_hash     binary(32)    NULL,
-        last_error       nvarchar(300) NULL,                -- sanitised: no personal data
+        last_error       nvarchar(300) NULL,                /* sanitised: no personal data */
         CONSTRAINT ux_deliveries_version UNIQUE (destination, event_key, version));
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('out.deliveries') AND name = 'ix_deliveries_work')
@@ -72,7 +72,7 @@ IF OBJECT_ID('out.last_sent', 'U') IS NULL
     CREATE TABLE [out].last_sent (
         destination   varchar(20)  NOT NULL,
         employee_id   varchar(20)  NOT NULL,
-        operation     varchar(30)  NOT NULL,                -- e.g. employee, job, pay, status
+        operation     varchar(30)  NOT NULL,                /* e.g. employee, job, pay, status */
         payload_hash  binary(32)   NOT NULL,
         sent_utc      datetime2(0) NOT NULL,
         CONSTRAINT pk_last_sent PRIMARY KEY (destination, employee_id, operation));
@@ -89,10 +89,10 @@ IF OBJECT_ID('out.shadow_payloads', 'U') IS NULL
 IF OBJECT_ID('xref.employees', 'U') IS NULL
     CREATE TABLE xref.employees (
         destination  varchar(20)  NOT NULL CONSTRAINT ck_xref_employees_dest CHECK (destination IN ('clearview', 'rosnet')),
-        employee_id  varchar(20)  NOT NULL,                 -- UKG employee ID (never the employee number)
-        external_id  nvarchar(64) NOT NULL,                 -- Clearview employee ID / Rosnet GUID
-        payroll_id   varchar(20)  NULL,                     -- Rosnet Payroll ID
-        pos_id       varchar(40)  NULL,                     -- Rosnet / Aloha POS ID
+        employee_id  varchar(20)  NOT NULL,                 /* UKG employee ID (never the employee number) */
+        external_id  nvarchar(64) NOT NULL,                 /* Clearview employee ID / Rosnet GUID */
+        payroll_id   varchar(20)  NULL,                     /* Rosnet Payroll ID */
+        pos_id       varchar(40)  NULL,                     /* Rosnet / Aloha POS ID */
         source       varchar(20)  NOT NULL CONSTRAINT ck_xref_employees_source CHECK (source IN ('extract', 'created', 'matched')),
         created_utc  datetime2(0) NOT NULL CONSTRAINT df_xref_employees_created DEFAULT SYSUTCDATETIME(),
         updated_utc  datetime2(0) NOT NULL CONSTRAINT df_xref_employees_updated DEFAULT SYSUTCDATETIME(),
@@ -124,6 +124,6 @@ WHERE NOT EXISTS (SELECT 1 FROM ref.destination_events d WHERE d.destination = s
 /* check */
 SELECT (SELECT COUNT(*) FROM sys.tables t WHERE SCHEMA_NAME(t.schema_id) + '.' + t.name IN
           ('ref.destination_events', 'ref.destination_codes', 'ref.store_modes', 'out.deliveries', 'out.last_sent',
-           'out.shadow_payloads', 'xref.employees'))                                        AS tables_present,   -- expect 7
-       (SELECT COUNT(*) FROM ref.destination_events)                                        AS destination_events, -- expect 25
-       (SELECT COUNT(*) FROM ref.store_modes WHERE mode <> 'off')                           AS stores_switched_on; -- expect 0
+           'out.shadow_payloads', 'xref.employees'))                                        AS tables_present,   /* expect 7 */
+       (SELECT COUNT(*) FROM ref.destination_events)                                        AS destination_events, /* expect 25 */
+       (SELECT COUNT(*) FROM ref.store_modes WHERE mode <> 'off')                           AS stores_switched_on; /* expect 0 */
