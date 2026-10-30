@@ -10,6 +10,7 @@ const { summary } = require("./helpers");
   await require("./birthday.test.js")();
   await require("./existing.test.js")();
   await require("./nightly.test.js")();
+  await require("./admin.test.js")();
   const { passed, failed } = summary();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

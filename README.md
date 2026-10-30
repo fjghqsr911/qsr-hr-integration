@@ -14,6 +14,9 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `GET /api/hub/roster` | `Employees.Summary.Read` | `Summary.Read` or `Summary.Admin` (or app role `Integration.Run` / `Roster.Read.All`) | Active + on-leave roster from the hub: names, store, district, job, dates. Optional comma-separated filters: `jobCodes`, `store`, `district`, `company`, `status` (A/L) |
 | `GET /api/hub/roster/contacts` | `Employees.Sensitive.Read` (or app role `RosterContacts.Read.All`) | `Sensitive.Read` / `Sensitive.Admin` | Roster + personal email, work email, work phone, company phone, `birthMonth` / `birthDay` (no year). Audited, fail-closed. Same filters as the roster |
 | `GET/POST /api/hub/nightly` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Run the nightly job on demand |
+| `PUT /api/hub/stores/{destination}/{store}/mode` body `{ "mode": "off" \| "shadow" \| "live" }` | `Employees.Summary.Write` | `Summary.Admin` | Switch a store's delivery mode for `clearview` or `rosnet` (upserts `ref.store_modes`, `changed_by` = caller). Returns the row. Audited (`write`, field `mode`), fail-closed. No app-only callers |
+| `POST /api/hub/deliveries/{id}/retry` | `Employees.Summary.Write` | `Summary.Admin` | Re-queue a `failed` or `dead` delivery: `pending`, next attempt now, attempts kept; any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
+| `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` delivery as `resolved` (sets `finished_utc`); any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
 | `GET /api/employees/{id}/sensitive?reveal=sin` | `Employees.Sensitive.Read` **and** `Employees.Sensitive.Reveal` | `Sensitive.Admin` | Same, with full SIN |
 
 `{id}` = UKG system employee ID (e.g. `EWLTH200NRY0`), visible in UKG page URLs.
@@ -84,7 +87,7 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 
 ## Audit log
 
-Sensitive reads, SIN reveals, and (future) writes are recorded in Table Storage `AccessAudit`:
+Sensitive reads, SIN reveals, and writes (store mode, delivery retry / resolve) are recorded in Table Storage `AccessAudit`:
 who, which app, which employee, which **field names**, action, outcome, time — never values.
 Partition = `yyyyMM`; rows sort newest first. If the audit write fails, **no data is returned**.
 
@@ -129,3 +132,16 @@ once 13's tables exist; with every store off it queues nothing). Connectors and 
 ## Deploy
 
 VS Code → Azure → `func-hrint-prod-cc` → **Deploy to Function App**.
+
+### Letting the monitor call the admin endpoints
+
+The read-only monitor UI (`ukg-ee-changes-monitor`) calls `PUT /api/hub/stores/…/mode` and `POST /api/hub/deliveries/{id}/retry|resolve`
+with the signed-in user's token. After deploying, in the portal:
+
+1. Function App `func-hrint-prod-cc` → **Authentication** → Microsoft identity provider → **Allowed client applications** →
+   add the monitor's client ID (printed by the monitor's `deploy/01-entra-app.sh`). If `ALLOWED_CLIENT_IDS` is set, add it there too.
+2. Function App → **CORS** → **Allowed Origins** → add the monitor's URL (e.g. `https://<monitor web app>.azurewebsites.net`);
+   leave *Enable Access-Control-Allow-Credentials* off (the monitor sends a bearer token, not cookies).
+
+The monitor's users still need role `Summary.Admin` on this API's enterprise app and the monitor app needs the delegated
+`Employees.Summary.Write` scope with admin consent (both set up by `01-entra-app.sh`).
