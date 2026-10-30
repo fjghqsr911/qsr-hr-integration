@@ -1,0 +1,44 @@
+[
+  {
+    "schema": "rpt",
+    "name": "v_current_roster",
+    "type_desc": "VIEW",
+    "definition": "CREATE   VIEW rpt.v_current_roster AS\r\nSELECT ec.employee_id, ec.employee_number, ec.company_id, ec.is_home_company, ec.employee_status,\r\n       ec.first_name, ec.preferred_name, ec.last_name,\r\n       CASE WHEN UPPER(LTRIM(RTRIM(ec.first_name))) = UPPER(LTRIM(RTRIM(ec.last_name)))\r\n            THEN COALESCE(NULLIF(LTRIM(RTRIM(ec.preferred_name)), ''), ec.first_name)\r\n            ELSE CONCAT(COALESCE(NULLIF(LTRIM(RTRIM(ec.preferred_name)), ''), ec.first_name), ' ', ec.last_name)\r\n       END AS display_name,\r\n       ec.org_level1 AS district, ec.org_level2 AS store,\r\n       ec.job_code, jc.job_description,\r\n       ec.date_in_job, ec.status_start_date, ec.original_hire_date, ec.last_hire_date,\r\n       CASE WHEN ec.last_hire_date > CAST(SYSDATETIME() AS date) THEN 1 ELSE 0 END AS is_future_start,\r\n       ec.full_or_part_time\r\nFROM stage.employment_current ec\r\nLEFT JOIN ref.job_codes jc ON jc.job_code = ec.job_code\r\nWHERE ec.employee_status IN ('A', 'L');"
+  },
+  {
+    "schema": "rpt",
+    "name": "v_data_quality",
+    "type_desc": "VIEW",
+    "definition": "CREATE   VIEW rpt.v_data_quality AS\r\nSELECT issue_id, issue_type, employee_id, company_id, store, detail, detected_utc\r\nFROM rpt.data_quality_issues;"
+  },
+  {
+    "schema": "rpt",
+    "name": "v_headcount_daily",
+    "type_desc": "VIEW",
+    "definition": "CREATE   VIEW rpt.v_headcount_daily AS\r\nSELECT snapshot_date, company_id, org_level1 AS district, org_level2 AS store,\r\n       SUM(CASE WHEN employee_status = 'A' THEN 1 ELSE 0 END) AS active,\r\n       SUM(CASE WHEN employee_status = 'L' THEN 1 ELSE 0 END) AS on_leave,\r\n       SUM(CASE WHEN full_or_part_time = 'F' AND employee_status = 'A' THEN 1 ELSE 0 END) AS active_full_time,\r\n       SUM(CASE WHEN full_or_part_time = 'P' AND employee_status = 'A' THEN 1 ELSE 0 END) AS active_part_time\r\nFROM stage.employment_snapshot\r\nGROUP BY snapshot_date, company_id, org_level1, org_level2;"
+  },
+  {
+    "schema": "rpt",
+    "name": "v_sync_health",
+    "type_desc": "VIEW",
+    "definition": "CREATE   VIEW rpt.v_sync_health AS\r\nSELECT TOP (500) run_type, started_utc, finished_utc, status, employees_processed, events_built, ukg_calls, error_summary\r\nFROM stage.sync_runs\r\nORDER BY started_utc DESC;"
+  },
+  {
+    "schema": "rpt",
+    "name": "v_workforce_events",
+    "type_desc": "VIEW",
+    "definition": "CREATE   VIEW rpt.v_workforce_events AS\r\nSELECT e.event_id, e.employee_id, e.event_type, e.effective_date, e.entered_utc,\r\n       DATEDIFF(day, e.effective_date, CAST(e.entered_utc AS date)) AS days_entered_after_effective,\r\n       e.from_company, e.to_company, e.from_store, e.to_store, e.from_job, e.to_job,\r\n       e.termination_category, e.counts_in_turnover, e.reason_code,\r\n       rc.description AS reason_description,\r\n       e.rule_applied, e.source_system_ids\r\nFROM rpt.workforce_events e\r\nLEFT JOIN ref.reason_codes rc ON rc.code_type = 'JobChange' AND rc.code = e.reason_code;"
+  },
+  {
+    "schema": "stage",
+    "name": "usp_purge_out_of_scope",
+    "type_desc": "SQL_STORED_PROCEDURE",
+    "definition": "CREATE   PROCEDURE stage.usp_purge_out_of_scope @LookbackMonths int = 24\r\nAS\r\nBEGIN\r\n    SET NOCOUNT ON;\r\n    DECLARE @cutoff date = DATEADD(month, -@LookbackMonths, CAST(SYSDATETIME() AS date));\r\n\r\n    /* Employees whose every company record is terminated before the cutoff */\r\n    SELECT employee_id INTO #out\r\n    FROM stage.employment_current\r\n    GROUP BY employee_id\r\n    HAVING SUM(CASE WHEN employee_status IN ('A','L') OR termination_date >= @cutoff OR termination_date IS NULL THEN 1 ELSE 0 END) = 0;\r\n\r\n    DELETE e FROM rpt.workforce_events e      JOIN #out o ON o.employee_id = e.employee_id;\r\n    DELETE d FROM rpt.data_quality_issues d   JOIN #out o ON o.employee_id = d.employee_id;\r\n    DELETE j FROM stage.job_history j         JOIN #out o ON o.employee_id = j.employee_id;\r\n    DELETE c FROM stage.employment_current c  JOIN #out o ON o.employee_id = c.employee_id;\r\n    DELETE b FROM stage.backfill_progress b   JOIN #out o ON o.employee_id = b.employee_id;\r\n\r\n    /* Daily snapshots are kept for the same lookback period */\r\n    DELETE FROM stage.employment_snapshot WHERE snapshot_date < @cutoff;\r\n\r\n    SELECT COUNT(*) AS employees_purged FROM #out;\r\nEND"
+  },
+  {
+    "schema": "sys",
+    "name": "database_firewall_rules",
+    "type_desc": "VIEW",
+    "definition": "CREATE VIEW sys.database_firewall_rules AS SELECT id, name, start_ip_address, end_ip_address, create_date, modify_date FROM sys.database_firewall_rules_table"
+  }
+]

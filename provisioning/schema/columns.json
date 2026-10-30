@@ -1,0 +1,1366 @@
+[
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "job_codes",
+    "COLUMN_NAME": "job_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "job_codes",
+    "COLUMN_NAME": "job_description",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "job_codes",
+    "COLUMN_NAME": "updated_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "code_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "description",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "category",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "30",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "event_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "60",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "creates_event",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "termination_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "ref",
+    "TABLE_NAME": "reason_codes",
+    "COLUMN_NAME": "counts_in_turnover",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "issue_id",
+    "DATA_TYPE": "bigint",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "issue_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "60",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "detail",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "400",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "data_quality_issues",
+    "COLUMN_NAME": "detected_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "employee_number",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "is_home_company",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "employee_status",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "first_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "preferred_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "last_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "display_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "201",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "district",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "job_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "job_description",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "date_in_job",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "status_start_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "original_hire_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "last_hire_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "is_future_start",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_current_roster",
+    "COLUMN_NAME": "full_or_part_time",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "issue_id",
+    "DATA_TYPE": "bigint",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "issue_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "60",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "detail",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "400",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_data_quality",
+    "COLUMN_NAME": "detected_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "snapshot_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "district",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "active",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "on_leave",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "active_full_time",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_headcount_daily",
+    "COLUMN_NAME": "active_part_time",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "run_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "started_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "finished_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "status",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "employees_processed",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "events_built",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "ukg_calls",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_sync_health",
+    "COLUMN_NAME": "error_summary",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "1000",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "event_id",
+    "DATA_TYPE": "bigint",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "event_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "40",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "effective_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "entered_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "days_entered_after_effective",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "from_company",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "to_company",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "from_store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "to_store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "from_job",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "to_job",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "termination_category",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "counts_in_turnover",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "reason_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "reason_description",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "rule_applied",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "60",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "v_workforce_events",
+    "COLUMN_NAME": "source_system_ids",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "400",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "event_id",
+    "DATA_TYPE": "bigint",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "event_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "40",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "effective_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "entered_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "from_company",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "to_company",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "from_store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "to_store",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "from_job",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "to_job",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "termination_category",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "counts_in_turnover",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "reason_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "rule_applied",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "60",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "source_system_ids",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "400",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "rpt",
+    "TABLE_NAME": "workforce_events",
+    "COLUMN_NAME": "built_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "batch_number",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "status",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "rows_loaded",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "attempted_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "backfill_progress",
+    "COLUMN_NAME": "error_summary",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "400",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "personal_email",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "254",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "work_email",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "254",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "work_phone",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "40",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "company_phone",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "40",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "source",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "updated_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "birth_month",
+    "DATA_TYPE": "tinyint",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employee_contact",
+    "COLUMN_NAME": "birth_day",
+    "DATA_TYPE": "tinyint",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "employee_number",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "is_home_company",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "employee_status",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "status_start_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "original_hire_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "last_hire_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "termination_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "date_last_worked",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "termination_category",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "org_level1",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "org_level2",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "job_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "full_or_part_time",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "updated_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "first_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "preferred_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "last_name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_current",
+    "COLUMN_NAME": "date_in_job",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "snapshot_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "employee_status",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "org_level1",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "org_level2",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "job_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "employment_snapshot",
+    "COLUMN_NAME": "full_or_part_time",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "system_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "64",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "employee_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "job_effective_date",
+    "DATA_TYPE": "date",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "date_time_created",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "employee_status",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "employee_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "job_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "org_level1",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "org_level2",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "full_or_part_time",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "salary_or_hourly",
+    "DATA_TYPE": "char",
+    "CHARACTER_MAXIMUM_LENGTH": "1",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "supervisor_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "reason_code",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "is_job_change",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "is_orgchange",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "is_transfer",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "is_rate_change",
+    "DATA_TYPE": "bit",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "home_company_id",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "10",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "loaded_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "job_description",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "100",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "job_history",
+    "COLUMN_NAME": "termination_category",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "run_id",
+    "DATA_TYPE": "uniqueidentifier",
+    "IS_NULLABLE": "NO",
+    "pk": "PK"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "run_type",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "started_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "finished_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "window_start_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "window_end_utc",
+    "DATA_TYPE": "datetime2",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "status",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "20",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "employees_processed",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "events_built",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "ukg_calls",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "stage",
+    "TABLE_NAME": "sync_runs",
+    "COLUMN_NAME": "error_summary",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "1000",
+    "IS_NULLABLE": "YES"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "id",
+    "DATA_TYPE": "int",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "name",
+    "DATA_TYPE": "nvarchar",
+    "CHARACTER_MAXIMUM_LENGTH": "128",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "start_ip_address",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "45",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "end_ip_address",
+    "DATA_TYPE": "varchar",
+    "CHARACTER_MAXIMUM_LENGTH": "45",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "create_date",
+    "DATA_TYPE": "datetime",
+    "IS_NULLABLE": "NO"
+  },
+  {
+    "TABLE_SCHEMA": "sys",
+    "TABLE_NAME": "database_firewall_rules",
+    "COLUMN_NAME": "modify_date",
+    "DATA_TYPE": "datetime",
+    "IS_NULLABLE": "NO"
+  }
+]

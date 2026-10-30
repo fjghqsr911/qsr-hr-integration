@@ -106,6 +106,14 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | Script | What it does |
 |---|---|
 | `09-birthday.sql` | Adds `birth_month` / `birth_day` + check constraint `stage.ck_contact_birthday` to `stage.employee_contact` |
+| `10-workforce-event-key.sql` | Adds `event_key` (stable SHA-256 key, unique) to `rpt.workforce_events`, indexes for the event rebuild, and an `event_id` sequence if it is not an identity |
+| `11-usp-rebuild-events.sql` | Creates `rpt.usp_rebuild_events` (event rules are in its header). Once it exists, every sync calls it; build the history once with `EXEC rpt.usp_rebuild_events @employee_ids = NULL` |
+| `12-check-rebuild-events.sql` | Dry run of the full build, rolled back: events by rule and type, and a second run that must change nothing |
+
+Run 10, 11, 12 in order, review 12's result, then run the full build. Connectors and the delivery queue use `event_key`, never `event_id`.
+
+`schema/` holds the database exported as JSON (views and procedures in `modules.json`, columns and primary keys in `columns.json`);
+`checks/` holds dated query results.
 
 ## Deploy
 
