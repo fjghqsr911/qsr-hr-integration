@@ -2,7 +2,7 @@
   14-check-deliveries.sql - dry run of the delivery queue for one store, then ROLLBACK (nothing is kept).
   Run in the Azure portal Query editor on sqldb-hrint after 13 and the updated 11. Avoid :05 past 10/14/18/22 UTC.
 
-  Inside one transaction: switch @store to shadow for @destination, delete that store's employees' events so the rebuild
+  Inside one transaction: switch @store to shadow for @destination, delete the events of the employees at that store so the rebuild
   sees them as new, rebuild them, and count what was queued; then rebuild again, which must queue nothing.
   Going live never queues history like this; deleting the events is only how this test makes every event "new".
   Counts only; no names or personal data.

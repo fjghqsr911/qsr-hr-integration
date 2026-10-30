@@ -15,7 +15,7 @@
     hire             first record for the company. Labelled, in order: Cross-company transfer in when the reason code is
                      a Transfer code (e.g. TRI) or the employee has a transfer-out termination in another company within
                      31 days (from_company / from_store / from_job then show where they came from); Additional company
-                     when another company's record started first and is active that day (UKG copies the original hire
+                     when the record in another company started first and is active that day (UKG copies the original hire
                      date to every company record); Rehire when they worked in another company before (or reason
                      code 101); System conversion (Admin codes, e.g. CONV / ACQ); otherwise New hire. So each employee
                      has at most one New hire.
@@ -48,7 +48,7 @@ BEGIN
         INSERT INTO #ids (employee_id)
         SELECT DISTINCT CAST(value AS varchar(20)) FROM OPENJSON(@employee_ids) WHERE NULLIF(value, '') IS NOT NULL;
 
-    /* 1. Job history in order, with the previous row's values */
+    /* 1. Job history in order, with the values from the previous row */
     SELECT j.employee_id, j.company_id, j.system_id, j.job_effective_date, j.date_time_created,
            j.employee_status AS status, j.org_level1 AS district, j.org_level2 AS store, j.job_code, j.full_or_part_time AS ftpt,
            j.reason_code, j.termination_category, j.is_rate_change,
@@ -79,7 +79,7 @@ BEGIN
     WHERE status IN ('A', 'L');
     CREATE INDEX ix ON #spans (employee_id, span_start);
 
-    /* Order of each employee's first record per company (the earliest is their real start) */
+    /* Order of the first record of each employee per company (the earliest is their real start) */
     SELECT employee_id, company_id,
            ROW_NUMBER() OVER (PARTITION BY employee_id ORDER BY job_effective_date, date_time_created, company_id) AS start_order
     INTO #starts
