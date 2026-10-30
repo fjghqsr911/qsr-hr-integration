@@ -112,7 +112,11 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `11-usp-rebuild-events.sql` | Creates `rpt.usp_rebuild_events` (event rules are in its header). Once it exists, every sync calls it; build the history once with `EXEC rpt.usp_rebuild_events @employee_ids = NULL` |
 | `12-check-rebuild-events.sql` | Dry run of the full build, rolled back: events by rule and type, and a second run that must change nothing |
 
-Run 10, 11, 12 in order, review 12's result, then run the full build. Connectors and the delivery queue use `event_key`, never `event_id`.
+| `13-delivery-tables.sql` | Delivery design tables: `ref.destination_events` (seeded), `ref.destination_codes`, `ref.store_modes` (no row = off), `out.deliveries`, `out.last_sent`, `out.shadow_payloads`, `xref.employees` (never purged) |
+| `14-check-deliveries.sql` | Dry run of the delivery queue for one store in shadow, rolled back; a second rebuild must queue nothing |
+
+Run 10, 11, 12 in order, review 12's result, then run the full build. Run 13 before re-running 11 (11 queues deliveries
+once 13's tables exist; with every store off it queues nothing). Connectors and the delivery queue use `event_key`, never `event_id`.
 
 `schema/` holds the database exported as JSON (views and procedures in `modules.json`, columns and primary keys in `columns.json`);
 `checks/` holds dated query results.

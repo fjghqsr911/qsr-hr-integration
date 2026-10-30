@@ -31,6 +31,10 @@
 
   event_key = SHA-256(employee | company | system_id | rule_applied): the same UKG record always gives the same key, so
   rebuilding is idempotent. Unchanged events are left alone (event_id and built_utc kept); connectors key on event_key.
+
+  Deliveries (after 13-delivery-tables.sql): new and meaningfully changed events are queued in out.deliveries for each
+  destination that takes them, only for stores switched to shadow or live in ref.store_modes (step 5). With every store
+  off, nothing is queued.
 */
 CREATE OR ALTER PROCEDURE rpt.usp_rebuild_events @employee_ids nvarchar(max) = NULL
 AS
@@ -176,8 +180,17 @@ BEGIN
     ) v (rule_applied, event_type, fires)
     WHERE v.fires = 1;
 
-    /* 4. Apply: insert new, update changed, remove events these employees no longer have */
-    DECLARE @changes TABLE (action nvarchar(10));
+    /* 4. Apply: insert new, update changed, remove events these employees no longer have. Then (5) queue deliveries,
+          in the same transaction, so an event change and its deliveries are written together or not at all. */
+    DECLARE @changes TABLE (
+        action nvarchar(10), event_key binary(32), employee_id varchar(20),
+        event_type varchar(40), effective_date date, from_company varchar(10), to_company varchar(10),
+        from_store varchar(20), to_store varchar(20), from_job varchar(20), to_job varchar(20), termination_category varchar(20),
+        old_event_type varchar(40), old_effective_date date, old_from_company varchar(10), old_to_company varchar(10),
+        old_from_store varchar(20), old_to_store varchar(20), old_from_job varchar(20), old_to_job varchar(20),
+        old_termination_category varchar(20));
+
+    BEGIN TRAN;
     WITH scoped AS (
         SELECT * FROM rpt.workforce_events
         WHERE @all = 1 OR employee_id IN (SELECT employee_id FROM #ids))
@@ -203,7 +216,55 @@ BEGIN
                 s.from_job, s.to_job, s.termination_category, s.counts_in_turnover, s.reason_code, s.rule_applied, s.source_system_ids,
                 SYSUTCDATETIME(), s.event_key)
     WHEN NOT MATCHED BY SOURCE THEN DELETE
-    OUTPUT $action INTO @changes;
+    OUTPUT $action, COALESCE(inserted.event_key, deleted.event_key), COALESCE(inserted.employee_id, deleted.employee_id),
+           inserted.event_type, inserted.effective_date, inserted.from_company, inserted.to_company,
+           inserted.from_store, inserted.to_store, inserted.from_job, inserted.to_job, inserted.termination_category,
+           deleted.event_type, deleted.effective_date, deleted.from_company, deleted.to_company,
+           deleted.from_store, deleted.to_store, deleted.from_job, deleted.to_job, deleted.termination_category
+    INTO @changes;
+
+    /* 5. Queue deliveries (skipped until 13-delivery-tables.sql has been run).
+          For each destination that takes the event type (ref.destination_events), when its new store, its old store
+          (terminations) or either store of a move is shadow or live (ref.store_modes; no row = off):
+            new event                                   -> pending
+            changed date / store / job / company / termination category -> pending, next version (a label alone: nothing)
+            removed by UKG (a correction)               -> review (nothing is sent automatically)
+          Older pending or failed versions of the same event are marked superseded. */
+    IF OBJECT_ID('out.deliveries', 'U') IS NOT NULL
+    BEGIN
+        ;WITH q AS (
+            SELECT c.event_key, c.employee_id,
+                   CASE WHEN c.action = 'DELETE' THEN 'removed' ELSE 'event' END AS kind,
+                   COALESCE(c.event_type, c.old_event_type)         AS event_type,
+                   COALESCE(c.effective_date, c.old_effective_date) AS effective_date,
+                   CASE WHEN c.action = 'DELETE' THEN c.old_from_store ELSE c.from_store END AS from_store,
+                   CASE WHEN c.action = 'DELETE' THEN c.old_to_store   ELSE c.to_store   END AS to_store
+            FROM @changes c
+            WHERE c.action IN ('INSERT', 'DELETE')
+               OR (c.action = 'UPDATE' AND EXISTS (
+                     SELECT c.effective_date, c.from_company, c.to_company, c.from_store, c.to_store, c.from_job, c.to_job, c.termination_category
+                     EXCEPT
+                     SELECT c.old_effective_date, c.old_from_company, c.old_to_company, c.old_from_store, c.old_to_store,
+                            c.old_from_job, c.old_to_job, c.old_termination_category)))
+        INSERT INTO [out].deliveries (destination, event_key, version, kind, employee_id, event_type, action, effective_date, store, status)
+        SELECT de.destination, q.event_key, ISNULL(v.max_version, 0) + 1, q.kind, q.employee_id, q.event_type, de.action,
+               q.effective_date, m.store, CASE WHEN q.kind = 'removed' THEN 'review' ELSE 'pending' END
+        FROM q
+        JOIN ref.destination_events de ON de.event_type = q.event_type
+        CROSS APPLY (SELECT TOP 1 sm.store FROM ref.store_modes sm
+                     WHERE sm.destination = de.destination AND sm.mode IN ('shadow', 'live') AND sm.store IN (q.to_store, q.from_store)
+                     ORDER BY CASE WHEN sm.store = q.to_store THEN 0 ELSE 1 END) m
+        OUTER APPLY (SELECT MAX(d.version) AS max_version FROM [out].deliveries d
+                     WHERE d.destination = de.destination AND d.event_key = q.event_key) v;
+
+        UPDATE d SET status = 'superseded', finished_utc = SYSUTCDATETIME()
+        FROM [out].deliveries d
+        WHERE d.status IN ('pending', 'failed')
+          AND d.event_key IN (SELECT event_key FROM @changes)
+          AND EXISTS (SELECT 1 FROM [out].deliveries n
+                      WHERE n.destination = d.destination AND n.event_key = d.event_key AND n.version > d.version);
+    END
+    COMMIT;
 
     DECLARE @n int = (SELECT COUNT(*) FROM @changes);
     RETURN @n;
