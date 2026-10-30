@@ -42,7 +42,7 @@ module.exports = async () => {
     const store = new Proxy({}, { get: (_t, k) => async (...a) => {
       calls.push(k);
       if (k === "isRunning") return false; if (k === "termCodes") return new Map();
-      if (k === "activeEmployeeIds" || k === "knownEmployeeIds") return []; if (k === "hoursSinceIntradaySuccess") return 1;
+      if (k === "currentEmployment") return []; if (k === "hoursSinceIntradaySuccess") return 1;
       if (k === "rebuildEvents") return 0; return "id";
     } });
     const ukg = { async getAll(p) {

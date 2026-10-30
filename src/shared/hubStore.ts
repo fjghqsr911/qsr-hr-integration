@@ -196,14 +196,11 @@ export class SqlHubStore implements HubStore {
          s.org_level2, s.job_code, s.full_or_part_time, s.date_in_job, s.first_name, s.preferred_name, s.last_name);`);
   }
 
-  async activeEmployeeIds(): Promise<string[]> {
-    const r = await this.pool.request().query(`SELECT DISTINCT employee_id FROM stage.employment_current WHERE employee_status IN ('A','L')`);
-    return r.recordset.map((x: any) => x.employee_id);
-  }
-
-  async knownEmployeeIds(): Promise<string[]> {
-    const r = await this.pool.request().query(`SELECT DISTINCT employee_id FROM stage.employment_current`);
-    return r.recordset.map((x: any) => x.employee_id);
+  async currentEmployment(): Promise<SnapshotRow[]> {
+    const r = await this.pool.request().query(`
+      SELECT employee_id, company_id, employee_status, org_level1, org_level2, job_code, full_or_part_time
+      FROM stage.employment_current`);
+    return r.recordset;
   }
 
   async purge(lookbackMonths: number): Promise<number> {

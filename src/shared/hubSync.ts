@@ -57,10 +57,8 @@ export interface HubStore {
   writeSnapshot(snapshotDate: string, rows: SnapshotRow[]): Promise<void>;
   /** Insert/update current employment rows (including names) for the given records; does not touch job history. */
   upsertEmployment(rows: EmploymentRow[]): Promise<void>;
-  /** Employee IDs with any active / on-leave record in stage.employment_current. */
-  activeEmployeeIds(): Promise<string[]>;
-  /** Employee IDs with any record in stage.employment_current. */
-  knownEmployeeIds(): Promise<string[]>;
+  /** Every row in stage.employment_current (one per employee and company), for comparison with UKG. */
+  currentEmployment(): Promise<SnapshotRow[]>;
   purge(lookbackMonths: number): Promise<number>;
   hoursSinceIntradaySuccess(): Promise<number | null>;
 }
@@ -181,6 +179,23 @@ export async function collectEmployees(
   return out;
 }
 
+/** Employees the database knows whose UKG status, district, store, job or FT/PT differs from their stored row, who have
+ *  a company record the database lacks, or whose active / on-leave company record is no longer active / on leave in UKG
+ *  while another one is (`ukg` = UKG's A/L rows). Employees the database has never seen are not included. */
+export function changedEmployees(ukg: EmploymentRow[], db: SnapshotRow[]): string[] {
+  const key = (r: { employee_id: string; company_id: string }) => `${r.employee_id}|${r.company_id}`;
+  const sig = (r: { employee_status: string | null; org_level1: string | null; org_level2: string | null; job_code: string | null; full_or_part_time: string | null }) =>
+    [r.employee_status, r.org_level1, r.org_level2, r.job_code, r.full_or_part_time].map(v => v ?? "").join("|");
+  const stored = new Map(db.map(r => [key(r), sig(r)]));
+  const known = new Set(db.map(r => r.employee_id));
+  const inUkg = new Set(ukg.map(key));
+  const ukgIds = new Set(ukg.map(r => r.employee_id));
+  const out = new Set<string>();
+  for (const r of ukg) if (known.has(r.employee_id) && stored.get(key(r)) !== sig(r)) out.add(r.employee_id);
+  for (const r of db) if ((r.employee_status === "A" || r.employee_status === "L") && ukgIds.has(r.employee_id) && !inUkg.has(key(r))) out.add(r.employee_id);
+  return [...out];
+}
+
 const isActiveOrLeave = (rows: EmploymentRow[]) => rows.some(r => r.employee_status === "A" || r.employee_status === "L");
 const cutoffFor = (now: Date, months: number) => { const d = new Date(now); d.setUTCMonth(d.getUTCMonth() - months); return d.toISOString().slice(0, 10); };
 
@@ -269,18 +284,20 @@ export async function runIntradaySync(store: HubStore, ukg: UkgSource, opts: Syn
 export interface NightlyResult {
   status: "succeeded" | "partial" | "failed" | "skipped";
   snapshotDate?: string; activeOrLeave?: number; snapshotRows?: number;
-  newEmployees?: number; noLongerActive?: number; employeesFailed?: number;
+  newEmployees?: number; noLongerActive?: number; employeesChanged?: number; employeesFailed?: number;
   contactsStored?: number; purged?: number | null; hoursSinceIntradaySuccess?: number | null;
   staleAlert?: boolean; ukgCalls?: number; message?: string;
 }
 
 /*
   Nightly:
-   1. Employment details for status A and L (filtered pages) -> today's snapshot + refresh current rows (with names).
+   1. Employment details for status A and L (filtered pages) -> today's snapshot.
    2. Person details (all pages) -> names + contacts (+ birth month/day, never the year) for active / on-leave employees.
       Everything else is discarded.
-   3. Employees active in the database but no longer A/L in UKG (missed terminations) and A/L employees the database
-      has never seen -> full refresh (employment + job history) for just those.
+   3. Compared with the database before anything is overwritten: employees active in the database but no longer A/L in
+      UKG (missed terminations), A/L employees the database has never seen, and employees whose status, district, store,
+      job or FT/PT differs (changes the intraday sync missed) -> full refresh (employment + job history + events) for
+      just those. Everyone else's current rows (with names) are refreshed from step 1.
    4. Contacts: full replace (active / on-leave only), so leavers' contact details are removed.
    5. 1st of the month (Toronto): purge employees terminated more than the lookback ago.
    6. Stale check: no successful intraday sync in 24 hours -> alert.
@@ -327,20 +344,30 @@ export async function runNightly(store: HubStore, ukg: UkgSource,
     for (const r of empRaw) { const id = nz(r.employeeID)!; empById.set(id, [...(empById.get(id) ?? []), r]); }
     const employment = empRaw.map(r => mapEmployment(r, names.get(nz(r.employeeID)!), termMap));
 
-    // 1. snapshot + refresh current rows
+    // 1. snapshot
     const snap: SnapshotRow[] = employment.map(e => ({
       employee_id: e.employee_id, company_id: e.company_id, employee_status: e.employee_status!,
       org_level1: e.org_level1, org_level2: e.org_level2, job_code: e.job_code, full_or_part_time: e.full_or_part_time
     }));
     await store.writeSnapshot(snapshotDate, snap);
-    await store.upsertEmployment(employment);
 
-    // 3. missed terminations + never-seen employees -> full refresh
-    const dbActive = new Set(await store.activeEmployeeIds());
-    const known = new Set(await store.knownEmployeeIds());
+    // 3. who needs a full refresh, decided against the database BEFORE the current rows are overwritten:
+    //    missed terminations, never-seen employees, and status / store / job / FT-PT changes the intraday sync missed
+    const db = await store.currentEmployment();
+    const dbActive = new Set(db.filter(r => r.employee_status === "A" || r.employee_status === "L").map(r => r.employee_id));
+    const known = new Set(db.map(r => r.employee_id));
     const noLongerActive = [...dbActive].filter(id => !activeIds.has(id));
     const unseen = [...activeIds].filter(id => !known.has(id));
-    const refreshIds = [...new Set([...noLongerActive, ...unseen])];
+    const changed = changedEmployees(employment, db);
+    const refreshIds = [...new Set([...noLongerActive, ...unseen, ...changed])];
+    if (refreshIds.length) log(`refreshing ${refreshIds.length}: ${noLongerActive.length} no longer active, ${unseen.length} new, ${changed.length} changed`);
+
+    // refresh current rows (with names) for everyone else. Employees being refreshed get theirs from the full refresh;
+    // if that fails, their old row stays, so the next night finds the difference again and retries.
+    const refreshing = new Set(refreshIds);
+    const rest = employment.filter(e => !refreshing.has(e.employee_id));
+    if (rest.length) await store.upsertEmployment(rest);
+
     let failed = 0;
     if (refreshIds.length) {
       const c = await collectEmployees(refreshIds, names, getAll, termMap, cutoff, log);
@@ -373,7 +400,7 @@ export async function runNightly(store: HubStore, ukg: UkgSource,
       failed ? `${failed} employee refresh(es) failed` : (staleAlert ? "Stale intraday sync" : undefined));
     return {
       status, snapshotDate, activeOrLeave: activeIds.size, snapshotRows: snap.length, newEmployees: unseen.length,
-      noLongerActive: noLongerActive.length, employeesFailed: failed, contactsStored: contacts.length, purged,
+      noLongerActive: noLongerActive.length, employeesChanged: changed.length, employeesFailed: failed, contactsStored: contacts.length, purged,
       hoursSinceIntradaySuccess: hours === null ? null : Math.round(hours * 10) / 10, staleAlert, ukgCalls: calls
     };
   } catch (e: any) {

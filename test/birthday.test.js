@@ -27,6 +27,10 @@ function mockUkg(data) {
   } };
 }
 
+/* Database rows matching emp() below (E4 is on leave), so the nightly sees no changes to refresh. */
+const dbRow = (id) => ({ employee_id: id, company_id: "SWN6T", employee_status: id === "E4" ? "L" : "A",
+  org_level1: "T2", org_level2: "T01647", job_code: "CM", full_or_part_time: null });
+
 function mockStore(ids) {
   const w = { contactsReplaced: null, upserts: null, removes: null, everything: [] };
   const rec = (name, ...a) => { w.everything.push({ name, a }); };
@@ -43,8 +47,7 @@ function mockStore(ids) {
     async replaceAllContacts(c) { rec("replaceAllContacts", c); w.contactsReplaced = c; },
     async writeSnapshot(...a) { rec("writeSnapshot", ...a); },
     async upsertEmployment(...a) { rec("upsertEmployment", ...a); },
-    async activeEmployeeIds() { return ids; },
-    async knownEmployeeIds() { return ids; },
+    async currentEmployment() { return ids.map(dbRow); },
     async purge() { return 0; },
     async hoursSinceIntradaySuccess() { return 3; }
   };

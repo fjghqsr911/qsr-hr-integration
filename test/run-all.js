@@ -9,6 +9,7 @@ const { summary } = require("./helpers");
 (async () => {
   await require("./birthday.test.js")();
   await require("./existing.test.js")();
+  await require("./nightly.test.js")();
   const { passed, failed } = summary();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

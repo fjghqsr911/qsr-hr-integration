@@ -46,7 +46,9 @@ failed) does not advance the window, so the next run retries them.
 ### Nightly job (`hubNightlyTimer`, 06:15 UTC = 2:15 AM Toronto summer / 1:15 AM winter)
 1. Employment details for status A and L -> today's `stage.employment_snapshot` (Toronto date) + refresh current rows (with names)
 2. Person details -> names + contact details + birth month/day (year discarded immediately) for active / on-leave staff only (everything else discarded)
-3. Full refresh for employees active in the DB but no longer A/L in UKG (missed terminations) and A/L employees never seen
+3. Full refresh (employment + job history + events) for employees active in the DB but no longer A/L in UKG (missed terminations),
+   A/L employees never seen, and employees whose status, district, store, job or FT/PT differs from the DB (changes the intraday
+   sync missed). Decided before step 1's rows are written; a failed refresh keeps the old row, so the next night retries it
 4. `stage.employee_contact` fully replaced (leavers' contacts removed)
 5. 1st of the month (Toronto): `stage.usp_purge_out_of_scope`
 6. No successful intraday sync in 24h -> logs `[hub-sync] failed: ...` (picked up by the App Insights alert)
