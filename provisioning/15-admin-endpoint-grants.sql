@@ -2,11 +2,11 @@
 -- update out.deliveries. The Function App user already reaches stage and rpt through the sync and the events
 -- procedure; these two tables are written directly, so they need explicit permissions.
 -- Run in the Azure portal Query editor on sqldb-hrint (open from the database, not master) as the Entra admin.
--- Safe to re-run. If the user name differs, pick it from the first result set and change @app.
+-- Safe to re-run. The Function App user is mi-func-hrint (not the app name); the first result set lists all external users.
 
 SELECT name AS external_users FROM sys.database_principals WHERE type = 'E' ORDER BY name;
 
-DECLARE @app sysname = N'func-hrint-prod-cc';
+DECLARE @app sysname = N'mi-func-hrint';   -- the Function App managed identity as created in sqldb-hrint
 DECLARE @sql nvarchar(max);
 
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = @app)
