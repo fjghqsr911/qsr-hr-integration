@@ -117,6 +117,7 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 
 | `13-delivery-tables.sql` | Delivery design tables: `ref.destination_events` (seeded), `ref.destination_codes`, `ref.store_modes` (no row = off), `out.deliveries`, `out.last_sent`, `out.shadow_payloads`, `xref.employees` (never purged) |
 | `14-check-deliveries.sql` | Dry run of the delivery queue for one store in shadow, rolled back; a second rebuild must queue nothing |
+| `15-admin-endpoint-grants.sql` | Grants the Function App user INSERT/UPDATE on `ref.store_modes` and UPDATE on `out.deliveries` for the admin endpoints (store mode, retry, resolve). Without it they return 503 |
 
 13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
 is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
@@ -142,6 +143,8 @@ with the signed-in user's token. After deploying, in the portal:
    add the monitor's client ID (printed by the monitor's `deploy/01-entra-app.sh`). If `ALLOWED_CLIENT_IDS` is set, add it there too.
 2. Function App → **CORS** → **Allowed Origins** → add the monitor's URL (e.g. `https://<monitor web app>.azurewebsites.net`);
    leave *Enable Access-Control-Allow-Credentials* off (the monitor sends a bearer token, not cookies).
+3. `provisioning/15-admin-endpoint-grants.sql` on `sqldb-hrint`: the admin endpoints write `ref.store_modes` and `out.deliveries`
+   directly, which the Function App user is not otherwise allowed to do.
 
 The monitor's users still need role `Summary.Admin` on this API's enterprise app and the monitor app needs the delegated
 `Employees.Summary.Write` scope with admin consent (both set up by `01-entra-app.sh`).
