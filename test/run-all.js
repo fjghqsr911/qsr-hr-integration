@@ -11,6 +11,7 @@ const { summary } = require("./helpers");
   await require("./existing.test.js")();
   await require("./nightly.test.js")();
   await require("./admin.test.js")();
+  await require("./diagnostics.test.js")();
   const { passed, failed } = summary();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
