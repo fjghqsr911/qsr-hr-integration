@@ -63,3 +63,17 @@ export async function writeAudit(e: AuditEntry): Promise<void> {
   await tableReady;
   await table.createEntity(record);
 }
+
+/** Read-only probe for the diagnostics endpoint: confirms the audit table is reachable (lists at most one entity).
+ *  Returns elapsed ms. Throws when audit storage is not configured in Azure (writes would fail closed) or is unreachable. */
+export async function probeAudit(): Promise<number> {
+  const started = Date.now();
+  if (!config.auditStorageAccount) {
+    if (inAzure()) throw new Error("Audit storage not configured (AUDIT_STORAGE_ACCOUNT)");
+    return 0;                                                                      // local dev: audit goes to the console
+  }
+  const table = getTable();
+  await tableReady;
+  for await (const _page of table.listEntities().byPage({ maxPageSize: 1 })) break;
+  return Date.now() - started;
+}

@@ -17,6 +17,7 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `PUT /api/hub/stores/{destination}/{store}/mode` body `{ "mode": "off" \| "shadow" \| "live" }` | `Employees.Summary.Write` | `Summary.Admin` | Switch a store's delivery mode for `clearview` or `rosnet` (upserts `ref.store_modes`, `changed_by` = caller). Returns the row. Audited (`write`, field `mode`), fail-closed. No app-only callers |
 | `POST /api/hub/deliveries/{id}/retry` | `Employees.Summary.Write` | `Summary.Admin` | Re-queue a `failed` or `dead` delivery: `pending`, next attempt now, attempts kept; any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
 | `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` delivery as `resolved` (sets `finished_utc`); any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
+| `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
 | `GET /api/employees/{id}/sensitive?reveal=sin` | `Employees.Sensitive.Read` **and** `Employees.Sensitive.Reveal` | `Sensitive.Admin` | Same, with full SIN |
 
 `{id}` = UKG system employee ID (e.g. `EWLTH200NRY0`), visible in UKG page URLs.
@@ -148,3 +149,5 @@ with the signed-in user's token. After deploying, in the portal:
 
 The monitor's users still need role `Summary.Admin` on this API's enterprise app and the monitor app needs the delegated
 `Employees.Summary.Write` scope with admin consent (both set up by `01-entra-app.sh`).
+Monitor readers who are not admins need at least `Summary.Read` on this API to see the components on the Diagnostics tab
+(`GET /api/hub/diagnostics`); only `Summary.Admin` sees which settings or grants are missing by name.
