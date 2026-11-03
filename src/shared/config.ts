@@ -99,6 +99,20 @@ export const config = {
   /** Days a masked shadow payload is kept in out.shadow_payloads. */
   get hubShadowRetentionDays() { return parseInt(process.env.HUB_SHADOW_RETENTION_DAYS ?? "30", 10); },
 
+  // ---- Entra ID sync (Microsoft Graph via the Function App managed identity) ----
+  /** Timer and after-sync Entra snapshot / compare runs. Off unless explicitly "true"; manual runs are always allowed. */
+  get entraSyncEnabled() { return (process.env.ENTRA_SYNC_ENABLED ?? "").toLowerCase() === "true"; },
+  /** Kill switch for every Graph write (apply, manual group members). Off unless explicitly "true"; accept still records. */
+  get entraWriteEnabled() { return (process.env.ENTRA_WRITE_ENABLED ?? "").toLowerCase() === "true"; },
+  /** Account domains whose Entra users are snapshotted and linked to employees by work email. */
+  get entraAccountDomains() { return list("ENTRA_ACCOUNT_DOMAINS", "qsrgroup.ca").map(s => s.toLowerCase().replace(/^@/, "")); },
+  /** Microsoft Graph base URL (v1.0). */
+  get entraGraphBase() { return (process.env.ENTRA_GRAPH_BASE ?? "https://graph.microsoft.com/v1.0").trim().replace(/\/+$/, ""); },
+  /** officeLocation for head office staff; unset = officeLocation is left alone for them. */
+  get entraHeadOfficeCity() { return presentValue(process.env.ENTRA_HEAD_OFFICE_CITY); },
+  /** Maximum ids per POST /api/hub/entra/proposals/decide and per manual group member call. */
+  get entraMaxDecide() { return parseInt(process.env.ENTRA_MAX_DECIDE ?? "200", 10); },
+
   // ---- Audit log (Azure Table Storage, via managed identity) ----
   get auditStorageAccount() { return (process.env.AUDIT_STORAGE_ACCOUNT ?? "").trim(); },
   get auditTable() { return (process.env.AUDIT_TABLE ?? "AccessAudit").trim(); }
