@@ -11,6 +11,7 @@ const contactConfig = (): ContactConfig => ({
   workPhoneFields: config.hubWorkPhoneFields, companyPhoneFields: config.hubCompanyPhoneFields
 });
 import { authorize, describeCaller, Roles, Scopes } from "../shared/auth";
+import { runConnector } from "../shared/connectors";
 
 const ukgSource: UkgSource = { getAll: (path, perPage) => ukgGetAll(path, perPage, 500) };
 
@@ -30,13 +31,23 @@ async function runSync(ctx: InvocationContext, trigger: string): Promise<SyncRes
   }
 }
 
+/** Sync, then drain the Clearview queue when the sync produced events (CLEARVIEW_ENABLED). A connector failure never fails the sync. */
+export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string): Promise<SyncResult> {
+  const result = await runSync(ctx, trigger);
+  if ((result.status === "succeeded" || result.status === "partial") && config.clearviewEnabled) {
+    try { await runConnector("clearview", ctx, "after-sync"); }
+    catch (e: any) { ctx.error(`[clearview] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+  }
+  return result;
+}
+
 // ---- Scheduled: 4x daily. Times are UTC (Flex Consumption):
 //      10:05, 14:05, 18:05, 22:05 UTC = 6/10/14/18 ET in summer (EDT), one hour earlier in winter (EST).
 app.timer("hubSyncTimer", {
   schedule: "0 5 10,14,18,22 * * *",
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-sync] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
-    await runSync(ctx, "timer");
+    await runSyncThenDeliver(ctx, "timer");
   }
 });
 
@@ -50,7 +61,7 @@ app.http("hubSyncRun", {
     if (!auth.ok) return auth.response!;
     ctx.log(`[hub-sync] manual run by ${describeCaller(auth.caller!)}`);
     try {
-      const result = await runSync(ctx, "manual");
+      const result = await runSyncThenDeliver(ctx, "manual");
       return { status: result.status === "failed" ? 502 : 200, jsonBody: result };
     } catch (e: any) {
       ctx.error(`[hub-sync] manual run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`);

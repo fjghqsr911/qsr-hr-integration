@@ -1,0 +1,18 @@
+{
+  "name": "store: Store transfer -> new assignment, previous ended the day before, reporting store patched (unverified)",
+  "delivery": { "action": "store", "eventType": "Store transfer", "effectiveDate": "2026-11-03", "store": "T22446" },
+  "event": { "eventType": "Store transfer", "effectiveDate": "2026-11-03", "fromCompany": "SWN6T", "toCompany": "SWN6T", "fromStore": "T02462", "toStore": "T22446" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "orgLevel2": "T22446", "jobCode": "TM", "firstName": "Ann", "preferredName": "Annie", "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "extract" },
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": null, "hourlyPayRate": null, "annualSalary": null },
+  "expected": {
+    "operation": "store",
+    "stepMethods": ["GET", "POST", "PUT", "PATCH"],
+    "lastStepPath": "/employee/55501",
+    "payload": {
+      "assignment": { "storeId": 2283, "startDate": "2026-11-03", "nameOnRegister": "Annie Example" },
+      "endPrevious": { "fromStore": "T02462", "storeId": 18, "storeNumber": 2462, "assignmentId": "$lookup:previousAssignmentId", "endDate": "2026-11-02" },
+      "reportingStoreId": 2283
+    }
+  }
+}

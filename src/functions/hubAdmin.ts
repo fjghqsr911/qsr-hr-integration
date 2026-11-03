@@ -7,7 +7,7 @@ import { writeAudit } from "../shared/audit";
 //
 //   PUT  /api/hub/stores/{destination}/{store}/mode   { "mode": "off" | "shadow" | "live" }   upsert ref.store_modes
 //   POST /api/hub/deliveries/{id}/retry                failed / dead -> pending, next attempt now (attempts kept)
-//   POST /api/hub/deliveries/{id}/resolve              review -> resolved
+//   POST /api/hub/deliveries/{id}/resolve              review | dead -> resolved (a dead delivery blocks the employee's later ones until resolved or retried)
 //
 // All three: scope Employees.Summary.Write + role Summary.Admin (same pair as /api/hub/sync). No app-only callers.
 // Every call is audited as a write (who, which app, which delivery's employee, which field - never values).
@@ -41,7 +41,7 @@ WHERE delivery_id = @id AND status IN ('failed', 'dead');`;
 export const DELIVERY_RESOLVE_SQL = `
 UPDATE [out].deliveries SET status = 'resolved', finished_utc = SYSUTCDATETIME()
 OUTPUT ${DELIVERY_COLUMNS.replace(/(\w+)/g, "inserted.$1")}
-WHERE delivery_id = @id AND status = 'review';`;
+WHERE delivery_id = @id AND status IN ('review', 'dead');`;
 
 const iso = (d: any) => (d ? new Date(d).toISOString() : null);
 const dateOnly = (d: any) => (d ? new Date(d).toISOString().slice(0, 10) : null);
@@ -109,7 +109,7 @@ export async function hubStoreMode(req: HttpRequest, ctx: InvocationContext): Pr
 interface Transition { endpoint: string; label: string; from: readonly string[]; sql: string; }
 
 const RETRY: Transition = { endpoint: "POST /hub/deliveries/{id}/retry", label: "retry", from: ["failed", "dead"], sql: DELIVERY_RETRY_SQL };
-const RESOLVE: Transition = { endpoint: "POST /hub/deliveries/{id}/resolve", label: "resolve", from: ["review"], sql: DELIVERY_RESOLVE_SQL };
+const RESOLVE: Transition = { endpoint: "POST /hub/deliveries/{id}/resolve", label: "resolve", from: ["review", "dead"], sql: DELIVERY_RESOLVE_SQL };
 
 async function deliveryTransition(req: HttpRequest, ctx: InvocationContext, t: Transition): Promise<HttpResponseInit> {
   const auth = authorize(req, { scope: Scopes.SummaryWrite, anyRole: [Roles.SummaryAdmin] });

@@ -1,0 +1,19 @@
+{
+  "name": "rehire: a Rehire event for an employee Clearview already has (xref) -> PUT rehire with store assignment and primary job",
+  "delivery": { "action": "create", "eventType": "Rehire", "effectiveDate": "2026-11-10", "store": "T02462" },
+  "event": { "eventType": "Rehire", "effectiveDate": "2026-11-10", "toCompany": "SWN6T", "toStore": "T02462", "toJob": "SH" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "lastHireDate": "2026-11-10", "terminationDate": "2026-03-01", "orgLevel2": "T02462", "jobCode": "SH",
+                  "fullOrPartTime": "F", "firstName": "Ann", "preferredName": null, "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "extract" },
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": "S", "hourlyPayRate": null, "annualSalary": 52000 },
+  "expected": {
+    "operation": "rehire",
+    "stepMethods": ["GET", "PUT"],
+    "lastStepPath": "/employeeStatus/55501/rehire",
+    "payload": {
+      "rehireDate": "2026-11-10", "reportingStoreId": 18,
+      "storeAssignments": [{ "storeId": 18, "employeeNameOnRegister": "Ann Example", "employeeIdOnRegister": null }],
+      "jobs": [{ "jobId": 9444, "payTypeCode": "S", "payRate": 52000, "primaryJob": true, "salaryHours": 40 }]
+    }
+  }
+}

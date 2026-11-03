@@ -17,7 +17,21 @@ module.exports = async () => {
     writeAudit: async () => { auditWrites++; },
     probeAudit: async () => { if (auditFails) throw auditFails; return 7; }
   });
-  const { hubDiagnostics, GRANTS_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
+  const noCreds = () => ({ mode: "oauth", status: "missing", companies: { SWN6T: false, SWNGK: false }, secretExpires: { SWN6T: null, SWNGK: null } });
+  const allCreds = (over = {}) => ({ mode: "oauth", status: "present", companies: { SWN6T: true, SWNGK: true }, secretExpires: { SWN6T: null, SWNGK: null }, ...over });
+  let creds = noCreds();
+  let clearviewFails = null;        // null = GET /organization/stores ok; otherwise the error to throw
+  const clearviewCalls = [];
+  stubModule("shared/connectors.js", {
+    clearviewCredentials: () => creds,
+    buildClearviewClient: () => ({
+      companies: () => Object.entries(creds.companies).filter(([, ok]) => ok).map(([c]) => c),
+      async get(company, p, q) { clearviewCalls.push(`${company} GET ${p}`); if (clearviewFails) throw clearviewFails; return { organizationId: 18, stores: [] }; }
+    }),
+    runConnector: async () => { throw new Error("not in this test"); }, runDiscovery: async () => { throw new Error("not in this test"); }
+  });
+  const { hubDiagnostics, GRANTS_SQL, GRANTS, CODES_COUNT_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
+  const { STATS_SQL } = require(path.join(DIST, "shared", "deliveryStore.js"));
 
   const principal = (claims) => Buffer.from(JSON.stringify({ claims })).toString("base64");
   const admin = [{ typ: "scp", val: "Employees.Summary.Read Employees.Summary.Write" }, { typ: "roles", val: "Summary.Admin" },
@@ -33,11 +47,16 @@ module.exports = async () => {
 
   const SETTINGS = ["UKG_BASE_URL", "UKG_USERNAME", "UKG_PASSWORD", "UKG_CUSTOMER_API_KEY", "HUB_SQL_SERVER", "HUB_SQL_DATABASE", "AUDIT_STORAGE_ACCOUNT"];
   const saved = {};
-  for (const k of [...SETTINGS, "HUB_SYNC_ENABLED", "ALLOWED_CLIENT_IDS"]) saved[k] = process.env[k];
-  const allGranted = () => ({ recordset: [{ storeModesInsert: 1, storeModesUpdate: 1, deliveriesUpdate: 1, syncRunsInsert: 1 }] });
+  for (const k of [...SETTINGS, "HUB_SYNC_ENABLED", "ALLOWED_CLIENT_IDS", "CLEARVIEW_ENABLED", "CLEARVIEW_LIVE_ENABLED"]) saved[k] = process.env[k];
+  const granted = (over = {}) => ({ recordset: [{ ...Object.fromEntries(GRANTS.map(g => [g.column, 1])), ...over }] });
+  const allGranted = (text) => /HAS_PERMS_BY_NAME/.test(text) ? granted() :
+    text === STATS_SQL ? { recordset: [{ pending: 3, waiting: 1, failed: 0, dead: 2, oldest_pending_minutes: 95 }] } :
+    text === CODES_COUNT_SQL ? { recordset: [{ code_type: "store", n: 2 }, { code_type: "job", n: 4 }, { code_type: "termination", n: 1 }] } : { recordset: [] };
   const reset = () => {
     for (const k of SETTINGS) process.env[k] = `test-${k.toLowerCase()}`;
     process.env.HUB_SYNC_ENABLED = "true"; delete process.env.ALLOWED_CLIENT_IDS;
+    process.env.CLEARVIEW_ENABLED = "true"; process.env.CLEARVIEW_LIVE_ENABLED = "false";
+    creds = noCreds(); clearviewFails = null; clearviewCalls.length = 0;
     pool = fakePool(allGranted); ukgFails = null; auditFails = null; auditWrites = 0; resets = 0; logs.length = 0;
   };
   const restore = () => { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } };
@@ -62,16 +81,16 @@ module.exports = async () => {
       assert(typeof b.checkedUtc === "string" && !Number.isNaN(Date.parse(b.checkedUtc)), "checkedUtc");
       eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "grants", "settings", "sql", "sync", "ukg"]);
       eq(COMPONENTS.map(c => b[c].status), COMPONENTS.map(() => "pass"));
-      eq(b.destinations, []);
+      eq(b.destinations.length, 1); eq(b.destinations[0].name, "clearview");
       eq(b.caller, { status: "pass", kind: "delegated", clientAppId: "monitor-app", clientAllowed: true });
       eq(b.sync, { status: "pass", enabled: true });
       eq(b.audit.ms, 7);
       assert(typeof b.sql.ms === "number" && typeof b.ukg.ms === "number", "sql / ukg carry ms");
       assert(!("missing" in b.settings) && !("unresolved" in b.settings) && !("missing" in b.grants), "readers never see setting / grant names");
-      eq(pool.calls.map(c => c.text), ["SELECT 1 AS ok;", GRANTS_SQL]);
+      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL].sort());
       assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
       eq(auditWrites, 0, "diagnostics never writes an audit record");
-      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0$/.test(logs[0]), logs[0]);
+      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: admin caller gets missing / unresolved arrays (empty when all is well)", async () => {
@@ -99,7 +118,7 @@ module.exports = async () => {
     });
 
     await test("diagnostics: a missing grant -> grants fail; names for admins only", async () => {
-      reset(); pool = fakePool(() => ({ recordset: [{ storeModesInsert: 1, storeModesUpdate: 0, deliveriesUpdate: 1, syncRunsInsert: 1 }] }));
+      reset(); pool = fakePool((text) => /HAS_PERMS_BY_NAME/.test(text) ? granted({ storeModesUpdate: 0 }) : allGranted(text));
       const asAdmin = (await hubDiagnostics(req(admin), ctx)).jsonBody;
       eq(asAdmin.grants.status, "fail"); eq(asAdmin.grants.missing, ["UPDATE on ref.store_modes"]);
       const asReader = (await hubDiagnostics(req(reader), ctx)).jsonBody;
@@ -107,6 +126,8 @@ module.exports = async () => {
       assert(/HAS_PERMS_BY_NAME\('ref.store_modes','OBJECT','INSERT'\) AS storeModesInsert/.test(GRANTS_SQL));
       assert(/HAS_PERMS_BY_NAME\('\[out\]\.\[deliveries\]','OBJECT','UPDATE'\) AS deliveriesUpdate/.test(GRANTS_SQL));
       assert(/HAS_PERMS_BY_NAME\('stage.sync_runs','OBJECT','INSERT'\) AS syncRunsInsert/.test(GRANTS_SQL));
+      for (const g of ["INSERT on [out].[last_sent]", "DELETE on [out].[shadow_payloads]", "INSERT on xref.employees", "INSERT on ref.destination_codes", "SELECT on rpt.workforce_events", "SELECT on stage.employment_current"])
+        assert(GRANTS.some(x => `${x.permission} on ${x.object}` === g), `grant check covers ${g}`);
     });
 
     await test("diagnostics: audit probe throwing -> audit fail, still HTTP 200, no audit write", async () => {
@@ -114,7 +135,7 @@ module.exports = async () => {
       const res = await hubDiagnostics(req(reader), ctx);
       eq(res.status, 200); eq(res.jsonBody.audit, { status: "fail", detail: "table unreachable" });
       eq(res.jsonBody.sql.status, "pass"); eq(auditWrites, 0);
-      assert(/ok=6 fail=1$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=1 clearview=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: SQL down -> sql and grants fail, pool reset, other components unaffected, 200", async () => {
@@ -143,11 +164,62 @@ module.exports = async () => {
       reset(); process.env.HUB_SYNC_ENABLED = "false";
       const b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
       eq(b.sync.status, "warn"); eq(b.sync.enabled, false);
-      assert(/ok=6 fail=0$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=0 clearview=warn$/.test(logs[0]), logs[0]);
       reset(); process.env.ALLOWED_CLIENT_IDS = "other-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.detail, "client_app_not_allowed");
       process.env.ALLOWED_CLIENT_IDS = "other-app, monitor-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.caller.clientAllowed, true);
+    });
+    await test("diagnostics: destinations[0] clearview without credentials -> api skipped, credentials missing, warn; queue and codes from SQL; no Clearview call", async () => {
+      reset();
+      const b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
+      const d = b.destinations[0];
+      eq(Object.keys(d).sort(), ["api", "authMode", "codes", "credentials", "detail", "enabled", "live", "name", "queue", "secretExpiresUtc", "status"]);
+      eq([d.name, d.status, d.enabled, d.live, d.authMode, d.credentials, d.secretExpiresUtc], ["clearview", "warn", true, false, "oauth", "missing", null]);
+      eq(d.api, { status: "skipped" });
+      eq(d.queue, { pending: 3, waiting: 1, failed: 0, dead: 2, oldestPendingMinutes: 95 });
+      eq(d.codes, { store: 2, job: 4, termination: 1 });
+      assert(/no Clearview OAuth settings \(CLEARVIEW_TOKEN_URL/.test(d.detail), d.detail);
+      reset(); creds = { ...noCreds(), mode: "key" };
+      assert(/no CLEARVIEW_AUTH_KEY_<COMPANY> set/.test((await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0].detail));
+      eq(clearviewCalls, [], "Clearview is never called without a key");
+      assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
+    });
+
+    await test("diagnostics: clearview with credentials -> timed GET /organization/stores per company; partial keys warn; API failure -> fail; sql down -> fail with queue null", async () => {
+      reset(); creds = allCreds();
+      let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq([d.status, d.credentials, d.api.status], ["pass", "present", "pass"]); assert(typeof d.api.ms === "number"); assert(!("detail" in d), d.detail);
+      eq(clearviewCalls, ["SWN6T GET /organization/stores", "SWNGK GET /organization/stores"]);
+      reset(); creds = allCreds({ status: "partial", companies: { SWN6T: true, SWNGK: false } });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq([d.status, d.credentials, d.api.status], ["warn", "partial", "pass"]); assert(/credentials for SWNGK missing/.test(d.detail), d.detail);
+      eq(clearviewCalls, ["SWN6T GET /organization/stores"]);
+      reset(); creds = allCreds(); clearviewFails = new Error("Clearview 401 on GET /organization/stores: Unauthorized");
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq([d.status, d.api.status], ["fail", "fail"]); assert(/SWN6T: Clearview 401/.test(d.api.detail), d.api.detail);
+      reset(); creds = allCreds(); process.env.CLEARVIEW_ENABLED = "false";
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq([d.status, d.enabled], ["warn", false]); assert(/CLEARVIEW_ENABLED is not "true"/.test(d.detail), d.detail);
+      eq(d.api, { status: "skipped", detail: "connector disabled; first call starts billing" }); eq(clearviewCalls, [], "disabled: Clearview is never called, even with credentials");
+      reset(); pool = fakePool(() => { throw new Error("db down"); });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq([d.status, d.queue], ["fail", null]); assert(/queue unavailable: db down/.test(d.detail), d.detail);
+      reset(); pool = fakePool((text) => /HAS_PERMS_BY_NAME/.test(text) ? granted() : { recordset: [] });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.codes, { store: 0, job: 0, termination: 0 }); assert(/no store mappings yet/.test(d.detail) && /no job mappings yet/.test(d.detail), d.detail);
+    });
+    await test("diagnostics: clearview OAuth secret expiry -> secretExpiresUtc (earliest) and warn within 60 days or past", async () => {
+      const soon = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), far = new Date(Date.now() + 400 * 86400000).toISOString().slice(0, 10);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: far, SWNGK: soon } });
+      let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "warn"); eq(d.secretExpiresUtc, new Date(soon).toISOString()); assert(/OAuth secret for SWNGK expires in (29|30) day\(s\)/.test(d.detail), d.detail);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: "2026-01-01", SWNGK: null } });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "warn"); assert(/OAuth secret for SWN6T expired \d+ day\(s\) ago/.test(d.detail), d.detail);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: far, SWNGK: far } });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "pass"); eq(d.secretExpiresUtc, new Date(far).toISOString());
     });
   } finally { restore(); }
 

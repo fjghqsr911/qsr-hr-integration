@@ -1,0 +1,14 @@
+{
+  "name": "pay: flat v2 body with yyyy-MM-dd date (what fixes Flexspring's 400), hourly, no salaryHours",
+  "delivery": { "action": "pay", "eventType": "Pay change", "effectiveDate": "2026-11-01", "store": "T22446" },
+  "event": { "eventType": "Pay change", "effectiveDate": "2026-11-01", "toCompany": "SWN6T", "toStore": "T22446" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "orgLevel2": "T22446", "jobCode": "TM", "firstName": "Ann", "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "extract" },
+  "sensitive": { "sin": "123456789", "dateOfBirth": "1987-07-14", "email": null, "salaryOrHourly": "H", "hourlyPayRate": 18.25, "annualSalary": null },
+  "expected": {
+    "operation": "pay",
+    "stepMethods": ["GET", "POST"],
+    "lastStepPath": "/employeeJob/55501/job/$lookup:primaryJobId/pay",
+    "payload": { "effectiveDate": "2026-11-01", "payTypeCode": "H", "payRate": 18.25, "salaryHours": null }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "terminate: Flexspring's exact body, default reason id 13078 when the category is unmapped, no notes",
+  "delivery": { "action": "terminate", "eventType": "Termination", "effectiveDate": "2026-10-18", "store": "T22446" },
+  "event": { "eventType": "Termination", "effectiveDate": "2026-10-18", "fromCompany": "SWN6T", "fromStore": "T22446", "terminationCategory": "Involuntary" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "employeeStatus": "T", "terminationDate": "2026-10-18", "orgLevel2": "T22446", "jobCode": "TM",
+                  "firstName": "Ann", "lastName": "Example" },
+  "xref": null,
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": null, "hourlyPayRate": null, "annualSalary": null },
+  "expected": {
+    "operation": "terminate",
+    "stepMethods": ["GET", "POST"],
+    "lastStepPath": "/employeeStatus/$lookup:employeeId/terminate",
+    "payload": { "terminationDate": "2026-10-18", "terminationReasonId": 13078 }
+  }
+}
