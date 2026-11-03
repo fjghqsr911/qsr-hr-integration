@@ -204,7 +204,7 @@ export async function checkClearview(now: Date = new Date()): Promise<Component 
   return { name: "clearview", status, enabled, live, authMode: creds.mode, credentials: creds.status, secretExpiresUtc, api, queue, codes, ...(detail ? { detail } : {}) };
 }
 
-/** The Entra sync: token + GET /organization probe (skipped unless the sync is enabled or a snapshot exists), age of the
+/** The Entra sync: token + GET /users?$top=1 probe (skipped unless the sync is enabled or a snapshot exists), age of the
  *  last entra.sync_runs row (warn past 26 h when enabled), counts, write switch. Never writes to Graph. */
 export async function checkEntra(now: Date = new Date()): Promise<Component> {
   const enabled = config.entraSyncEnabled, writeEnabled = config.entraWriteEnabled;
@@ -234,7 +234,7 @@ export async function checkEntra(now: Date = new Date()): Promise<Component> {
   const hasSnapshot = (counts?.users ?? 0) > 0;
   let api: Component | { status: "skipped"; detail?: string } = { status: "skipped", detail: "sync disabled and no snapshot yet" };
   if (enabled || hasSnapshot) {
-    try { api = { status: "pass", ms: await buildGraphClient().probeOrganization() }; }
+    try { api = { status: "pass", ms: await buildGraphClient().probeDirectory() }; }
     catch (e: any) { api = { status: "fail", detail: errText(e) }; }
   }
 

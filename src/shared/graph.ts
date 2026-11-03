@@ -147,14 +147,18 @@ export class GraphClient {
         if (!timeout && attempt < MAX_RETRIES) { await this.sleep(1000 * (attempt + 1)); continue; }
         throw new GraphError(0, timeout ? "timeout" : "network", `Graph ${timeout ? "timeout" : "network error"} on ${method} ${safePath(url, this.opts.baseUrl)}`);
       }
-      clearTimeout(timer);
       if (RETRYABLE.has(res.status) && attempt < MAX_RETRIES) {
+        clearTimeout(timer);
+        await res.body?.cancel().catch(() => {});                              // release the socket before waiting
         const wait = retryAfterMs(res.headers.get("retry-after"), this.now()) ?? 1000 * (attempt + 1);
         this.log(`[graph] ${res.status} on ${method} ${safePath(url, this.opts.baseUrl)}: retry in ${Math.round(wait / 1000)} s`);
         await this.sleep(wait);
         continue;
       }
-      const text = res.status === 204 ? "" : await res.text();
+      let text = "";
+      try { text = res.status === 204 ? "" : await res.text(); }              // the timeout covers the body read too
+      catch (e: any) { clearTimeout(timer); throw new GraphError(0, e?.name === "AbortError" ? "timeout" : "network", `Graph ${e?.name === "AbortError" ? "timeout" : "network error"} on ${method} ${safePath(url, this.opts.baseUrl)}`); }
+      clearTimeout(timer);
       let body: any = null;
       if (text) { try { body = JSON.parse(text); } catch { body = null; } }
       if (!res.ok) {
@@ -238,10 +242,10 @@ export class GraphClient {
     }
   }
 
-  /** Diagnostics: a token and GET /organization?$select=id. Returns elapsed ms. */
-  async probeOrganization(): Promise<number> {
+  /** Diagnostics: a token and one GET /users?$top=1 (covered by User.Read.All, unlike /organization). Returns elapsed ms. */
+  async probeDirectory(): Promise<number> {
     const started = this.now();
-    await this.call("GET", "/organization?$select=id");
+    await this.call("GET", "/users?$select=id&$top=1");
     return this.now() - started;
   }
 

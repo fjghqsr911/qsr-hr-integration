@@ -15,18 +15,21 @@ module.exports = async () => {
       if (step instanceof Error) throw step;
       if (step.hang) return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))));
       const text = step.body === undefined ? "" : JSON.stringify(step.body);
-      return { ok: step.status < 400, status: step.status, headers: { get: (k) => (step.headers ?? {})[k.toLowerCase()] ?? null }, text: async () => text };
+      const body = { cancelled: false, async cancel() { body.cancelled = true; } };
+      bodies.push(body);
+      return { ok: step.status < 400, status: step.status, headers: { get: (k) => (step.headers ?? {})[k.toLowerCase()] ?? null }, text: async () => text, body };
     };
     return { fetchImpl, calls };
   };
   const sleeps = [];
+  const bodies = [];
   let clock = 1_000_000;
   const client = (script, over = {}) => {
     const f = makeFetch(script);
     const c = new GraphClient({ baseUrl: "https://graph.test/v1.0", getToken: async () => TOKEN, fetchImpl: f.fetchImpl, sleep: async (ms) => { sleeps.push(ms); }, now: () => clock, timeoutMs: 20, ...over });
     return { c, calls: f.calls };
   };
-  const reset = () => { sleeps.length = 0; };
+  const reset = () => { sleeps.length = 0; bodies.length = 0; };
 
   await test("graph: listUsers filters per domain with ConsistencyLevel eventual + $count + the $select list, follows @odata.nextLink, drops guests, lower-cases ids", async () => {
     reset();
@@ -49,6 +52,7 @@ module.exports = async () => {
     reset(); clock = 1_000_000;
     let { c } = client([{ status: 429, headers: { "retry-after": "5" }, body: { error: { code: "TooManyRequests", message: "Throttled: user pat@qsrgroup.ca" } } }, { status: 200, body: { value: [] } }]);
     eq(await c.listGroups(), []); eq(sleeps, [5000]);
+    eq(bodies.map(b => b.cancelled), [true, false], "the retried response body is cancelled, the final one is read");
     reset();
     ({ c } = client([{ status: 503, headers: { "retry-after": new Date(clock + 7000).toUTCString() } }, { status: 200, body: { value: [] } }]));
     await c.listGroups(); assert(sleeps[0] >= 6000 && sleeps[0] <= 7000, String(sleeps[0]));
@@ -100,8 +104,8 @@ module.exports = async () => {
     eq(await c.removeGroupMember("g1", "u1"), "removed");
     ({ c, calls } = client([{ status: 200, body: { value: [{ id: "U1" }, { id: "u2" }] } }]));
     eq(await c.listGroupMemberUserIds("g1"), ["u1", "u2"]); assert(calls[0].url.includes("/groups/g1/members/microsoft.graph.user?$select=id"), calls[0].url);
-    ({ c, calls } = client([{ status: 200, body: { value: [{ id: "o1" }] } }]));
-    assert(typeof await c.probeOrganization() === "number"); assert(calls[0].url.endsWith("/organization?$select=id"));
+    ({ c, calls } = client([{ status: 200, body: { value: [{ id: "u1" }] } }]));
+    assert(typeof await c.probeDirectory() === "number"); assert(calls[0].url.endsWith("/users?$select=id&$top=1"), "the probe uses an endpoint User.Read.All covers");
   });
   await test("graph: a token failure is a GraphError without the underlying message", async () => {
     const { c } = client([{ status: 200, body: {} }], { getToken: async () => { throw new Error("ManagedIdentityCredential: secret xyz"); } });

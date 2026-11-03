@@ -5,7 +5,7 @@ import { getSharedHubPool, resetSharedHubPool } from "../shared/sql";
 import { writeAudit } from "../shared/audit";
 import { buildGraphClient, GraphClient, GraphError } from "../shared/graph";
 import { ProposalRow, publicProposal, SqlEntraStore } from "../shared/entra/store";
-import { applyProposal, ApplyOutcome, isDue } from "../shared/entra/apply";
+import { applyProposal, ApplyOutcome, isClaimable, isDue, isStuck } from "../shared/entra/apply";
 import { dedupeHash, groupManageable, torontoToday } from "../shared/entra/compare";
 
 // Entra admin actions (used by the read-only monitor UI). Every route: scope Employees.Summary.Write + role Entra.Admin;
@@ -105,9 +105,9 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
     if (action === "accept") {
       if (p.status !== "proposed") return conflict(p, "accept needs proposed");
     } else if (action === "reject") {
-      if (p.status !== "proposed" && p.status !== "accepted") return conflict(p, "reject needs proposed or accepted");
+      if (p.status !== "proposed" && p.status !== "accepted" && !isStuck(p)) return conflict(p, "reject needs proposed or accepted");
     } else {
-      if (p.status !== "accepted") return conflict(p, "apply needs accepted");
+      if (!isClaimable(p)) return conflict(p, "apply needs accepted");
       if (!isDue(p, d.today)) return { status: 409, headers: NO_STORE, jsonBody: { error: `Proposal is due on ${p.dueDate}`, status: p.status, dueDate: p.dueDate } };
       if (!d.writeEnabled) return writesDisabled();
     }
@@ -160,7 +160,7 @@ export async function entraProposalsDecide(req: HttpRequest, ctx: InvocationCont
     for (const id of unique) {
       const p = await d.store.proposal(id);
       if (!p) { results.push({ proposalId: id, outcome: "not_found", status: null }); continue; }
-      const allowed = action === "accept" ? p.status === "proposed" : (p.status === "proposed" || p.status === "accepted");
+      const allowed = action === "accept" ? p.status === "proposed" : (p.status === "proposed" || p.status === "accepted" || isStuck(p));
       if (!allowed) { results.push({ proposalId: id, outcome: "conflict", status: p.status }); continue; }
       const refused = await auditBefore(ctx, "decide", { caller, endpoint, employeeId: p.employeeId, fields: fieldsOf(p) });
       if (refused) return { ...refused, jsonBody: { error: "Temporarily unavailable", action, results } };     // stop: nothing further changes
@@ -347,10 +347,17 @@ export async function entraLinkCreate(req: HttpRequest, ctx: InvocationContext):
     if (!user) return notFound("Entra user not in the snapshot");
     const taken = await d.store.linkForUser(userObjectId);
     if (taken && taken.employeeId !== employeeId) return { status: 409, headers: NO_STORE, jsonBody: { error: "user_already_linked", employeeId: taken.employeeId } };
+    if (taken && taken.method === "manual") return ok(taken);                 // unchanged: nothing to write, nothing to stale
     const refused = await auditBefore(ctx, "link", { caller, endpoint: "POST /hub/entra/links", employeeId, fields: ["link"] });
     if (refused) return refused;
-    const row = await d.store.linkManual(employeeId, userObjectId, by);
-    return ok(row);
+    try { return ok(await d.store.linkManual(employeeId, userObjectId, by)); }
+    catch (e: any) {
+      if (e?.number === 2601 || e?.number === 2627) {                        // unique index: someone linked the user meanwhile
+        const now = await d.store.linkForUser(userObjectId);
+        return { status: 409, headers: NO_STORE, jsonBody: { error: "user_already_linked", employeeId: now?.employeeId ?? null } };
+      }
+      throw e;
+    }
   });
 }
 

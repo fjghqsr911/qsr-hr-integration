@@ -17,13 +17,15 @@ export async function snapshotEntra(graph: GraphClient, store: EntraStore, opts:
     opts.log(`users @${domain}: ${users.length}`);
   }
   const users = [...byId.values()];
+  if (!users.length) throw new Error(`Graph listed no users for ${opts.domains.join(", ")}: snapshot not written (check ENTRA_ACCOUNT_DOMAINS and the Graph permissions)`);
   await store.upsertUsers(users, opts.fetchedUtc);
   const usersMissing = await store.markMissingUsers(opts.fetchedUtc);
 
   const groups: GraphGroup[] = await graph.listGroups();
   await store.upsertGroups(groups, opts.fetchedUtc);
 
-  const managed = (await store.groups()).filter(g => g.managed);
+  const listed = new Set(groups.map(g => g.id));
+  const managed = (await store.groups()).filter(g => g.managed && listed.has(g.objectId));   // a managed group deleted in Entra is skipped, not fatal
   for (const g of managed) {
     const ids = await graph.listGroupMemberUserIds(g.objectId);
     await store.replaceGroupMembers(g.objectId, ids, opts.fetchedUtc);

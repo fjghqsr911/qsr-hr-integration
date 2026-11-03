@@ -60,13 +60,15 @@ export async function runEntraSync(store: EntraStore, graph: GraphClient, opts: 
     const linkByEmployee = new Map(links.map(l => [l.employeeId, l]));
 
     const create: ProposalCandidate[] = [], blocked: ProposalCandidate[] = [], stale: number[] = [], suppressed = new Set<string>();
-    const seenEmployees = new Set<string>();
+    const seenEmployees = new Set<string>(), compared: string[] = [];
     for (const emp of employees) {
       seenEmployees.add(emp.employeeId);
       const link = linkByEmployee.get(emp.employeeId);
-      const user = link ? userById.get(link.userObjectId) ?? null : null;
+      const found = link ? userById.get(link.userObjectId) ?? null : null;
+      const user = found && !found.missingSinceUtc ? found : null;
+      if (user) compared.push(emp.employeeId);
       const r = diff({
-        employee: emp, desired: computeDesired(emp, { headOfficeCity: opts.headOfficeCity }), user: user && !user.missingSinceUtc ? user : null,
+        employee: emp, desired: computeDesired(emp, { headOfficeCity: opts.headOfficeCity }), user,
         openProposals: openByEmployee.get(emp.employeeId) ?? [], rejections, rules, groups,
         memberships: user ? memberships.get(user.objectId) ?? new Set<string>() : new Set<string>(), eventId: events.get(emp.employeeId) ?? null, today
       });
@@ -77,7 +79,7 @@ export async function runEntraSync(store: EntraStore, graph: GraphClient, opts: 
 
     counts.proposalsNew = await store.upsertProposals([...create, ...blocked]);
     counts.proposalsStale = await store.staleProposals(stale);
-    const pruned = await store.pruneRejections([...suppressed]);
+    const pruned = await store.pruneRejections(compared, [...suppressed]);
     opts.log(`compare: candidates=${create.length} blocked=${blocked.length} new=${counts.proposalsNew} stale=${counts.proposalsStale} rejections_cleared=${pruned}`);
 
     await store.finishRun(runId, "succeeded", counts);

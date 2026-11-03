@@ -52,8 +52,9 @@ module.exports = async () => {
     const t = text.trim();
     if (same(t, S.PROPOSAL_SELECT_SQL)) return rs(db.proposals.get(Number(inputs.id)));
     if (same(t, S.PROPOSAL_ACCEPT_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "proposed") { Object.assign(p, { status: "accepted", decided_by: inputs.by, decided_utc: new Date(), error: null }); return rs(p); } return rs(); }
-    if (same(t, S.PROPOSAL_REJECT_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && ["proposed", "accepted"].includes(p.status)) { Object.assign(p, { status: "rejected", decided_by: inputs.by, decided_utc: new Date() }); return rs(p); } return rs(); }
-    if (same(t, S.PROPOSAL_CLAIM_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "accepted" && (!p.due_date || p.due_date <= inputs.today)) { p.status = "applying"; p.error = null; return rs(p); } return rs(); }
+    const stuck = (p) => p.status === "applying" && Date.now() - new Date(p.last_seen_utc).getTime() > 15 * 60_000;
+    if (same(t, S.PROPOSAL_REJECT_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && (["proposed", "accepted"].includes(p.status) || stuck(p))) { Object.assign(p, { status: "rejected", decided_by: inputs.by, decided_utc: new Date() }); return rs(p); } return rs(); }
+    if (same(t, S.PROPOSAL_CLAIM_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && (p.status === "accepted" || stuck(p)) && (!p.due_date || p.due_date <= inputs.today)) { p.status = "applying"; p.error = null; p.last_seen_utc = new Date(); return rs(p); } return rs(); }
     if (same(t, S.PROPOSAL_FINISH_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "applying") { p.status = inputs.status; if (inputs.currentValue !== null && inputs.currentValue !== undefined) p.current_value = inputs.currentValue; p.error = inputs.error; if (inputs.status === "applied") p.applied_utc = new Date(); return rs(p); } return rs(); }
     if (same(t, S.REJECTION_UPSERT_SQL)) { db.rejections.push(inputs.hash); return rs(); }
     if (same(t, S.MANUAL_APPLIED_SQL)) { const row = proposal(db.nextProposal++, { employee_id: inputs.employeeId, user_object_id: inputs.userObjectId, kind: inputs.kind, field: null, group_id: inputs.groupId, current_value: null, proposed_value: null, source: "manual", status: "applied", dedupe_hash: Buffer.from(inputs.hash, "hex"), decided_by: inputs.by, applied_utc: new Date() }); db.manual.push(row); return rs(row); }
@@ -71,7 +72,7 @@ module.exports = async () => {
     if (/COUNT\(\*\) AS n FROM entra\.group_members/.test(t)) return rs({ n: db.members.has(`${inputs.groupId}|${inputs.userId}`) ? 1 : 0 });
     if (/INSERT INTO entra\.group_members/.test(t)) { db.members.add(`${inputs.groupId}|${inputs.userId}`); return rs(); }
     if (/DELETE FROM entra\.group_members WHERE group_id = @groupId AND user_id = @userId/.test(t)) { db.members.delete(`${inputs.groupId}|${inputs.userId}`); return rs(); }
-    if (/^UPDATE entra\.users SET/.test(t)) { db.userUpdates.push({ ...inputs }); return rs(); }
+    if (/^UPDATE entra\.users SET/.test(t)) { if (db.refreshFails) throw new Error("refresh down"); db.userUpdates.push({ ...inputs }); return rs(); }
     throw new Error(`unexpected SQL: ${t.slice(0, 90)}`);
   };
 
@@ -155,7 +156,7 @@ module.exports = async () => {
       eq(audits.length, 1); eq([audits[0].endpoint, audits[0].employeeId, audits[0].action, audits[0].fields, audits[0].outcome], ["POST /hub/entra/proposals/{id}/accept", "E100", "write", ["jobTitle"], "allowed"]);
       assert(pool.calls.findIndex(c => same(c.text, S.PROPOSAL_ACCEPT_SQL)) > 0, "the accept UPDATE runs after the audit");
       assert(/status = 'accepted'/.test(S.PROPOSAL_ACCEPT_SQL) && /WHERE proposal_id = @id AND status = 'proposed'/.test(S.PROPOSAL_ACCEPT_SQL), "status-guarded UPDATE");
-      assert(/WHERE proposal_id = @id AND status = 'accepted' AND \(due_date IS NULL OR due_date <= @today\)/.test(S.PROPOSAL_CLAIM_SQL), "claim guards status and due date");
+      assert(/WHERE proposal_id = @id AND \(status = 'accepted' OR \(status = 'applying' AND last_seen_utc < DATEADD\(minute, -15, SYSUTCDATETIME\(\)\)\)\) AND \(due_date IS NULL OR due_date <= @today\)/.test(S.PROPOSAL_CLAIM_SQL), "claim guards status and due date");
       assert(logs.every(l => !/General Manager/.test(l)), "values are not logged");
     });
     await test("accept: writes disabled -> accepted is still recorded, no Graph call, applyOutcome writes_disabled; disable due later -> accepted, due_later", async () => {
@@ -169,8 +170,8 @@ module.exports = async () => {
       eq(audits[0].fields, ["disable"]);
     });
     await test("accept / reject / apply: wrong status -> 409 with the current status, nothing audited, nothing written", async () => {
-      for (const [status, fn, name] of [["accepted", A.entraProposalAccept, "accept"], ["applied", A.entraProposalAccept, "accept"], ["rejected", A.entraProposalReject, "reject"], ["stale", A.entraProposalReject, "reject"], ["proposed", A.entraProposalApply, "apply"], ["applying", A.entraProposalApply, "apply"], ["failed", A.entraProposalApply, "apply"]]) {
-        reset(); db.proposals.set(1, proposal(1, { status }));
+      for (const [status, fn, name] of [["accepted", A.entraProposalAccept, "accept"], ["applied", A.entraProposalAccept, "accept"], ["rejected", A.entraProposalReject, "reject"], ["stale", A.entraProposalReject, "reject"], ["applying", A.entraProposalReject, "reject"], ["proposed", A.entraProposalApply, "apply"], ["applying", A.entraProposalApply, "apply"], ["failed", A.entraProposalApply, "apply"]]) {
+        reset(); db.proposals.set(1, proposal(1, { status, last_seen_utc: new Date() }));          // a fresh applying row is live, not stuck
         const res = await fn(req(admin, { id: "1" }), ctx);
         eq(res.status, 409, `${name} of ${status}`); eq(res.jsonBody.status, status); eq(audits.length, 0); eq(graphCalls, []);
         eq(pool.calls.length, 1, "read only");
@@ -223,6 +224,26 @@ module.exports = async () => {
       reset(); db.proposals.set(1, proposal(1, { status: "accepted" })); graphUsers = {};
       res = await A.entraProposalApply(req(admin, { id: "1" }), ctx);
       eq([res.status, res.jsonBody.status, res.jsonBody.error], [502, "failed", "user not found in Entra"]);
+    });
+    await test("apply: a row stuck in applying (claim older than 15 min) can be applied again or rejected; a fresh applying row cannot", async () => {
+      const old = new Date(Date.now() - 20 * 60_000);
+      reset(); db.proposals.set(1, proposal(1, { status: "applying", last_seen_utc: old }));
+      let res = await A.entraProposalApply(req(admin, { id: "1" }), ctx);
+      eq([res.status, res.jsonBody.status, res.jsonBody.applyOutcome], [200, "applied", "applied"]); eq(audits[0].fields, ["jobTitle"]);
+      reset(); db.proposals.set(1, proposal(1, { status: "applying", last_seen_utc: old }));
+      res = await A.entraProposalReject(req(admin, { id: "1" }), ctx); eq([res.status, res.jsonBody.status], [200, "rejected"]);
+      reset(); db.proposals.set(1, proposal(1, { status: "applying", last_seen_utc: old }));
+      res = await A.entraProposalsDecide(req(admin, {}, { ids: [1], action: "reject" }), ctx); eq(res.jsonBody.results[0].outcome, "rejected");
+      reset(); db.proposals.set(1, proposal(1, { status: "applying", last_seen_utc: new Date() }));
+      eq((await A.entraProposalApply(req(admin, { id: "1" }), ctx)).status, 409); eq((await A.entraProposalReject(req(admin, { id: "1" }), ctx)).status, 409);
+      assert(/last_seen_utc = SYSUTCDATETIME\(\)/.test(S.PROPOSAL_CLAIM_SQL), "the claim is stamped");
+      assert(/status = 'applying' AND last_seen_utc < DATEADD\(minute, -15, SYSUTCDATETIME\(\)\)/.test(S.PROPOSAL_CLAIM_SQL) && /status = 'applying' AND last_seen_utc < DATEADD/.test(S.PROPOSAL_REJECT_SQL));
+    });
+    await test("apply: the row is applied as soon as the Graph write succeeded; a failing snapshot refresh is logged, not a failure", async () => {
+      reset(); db.proposals.set(1, proposal(1, { status: "accepted" })); db.refreshFails = true;
+      const res = await A.entraProposalApply(req(admin, { id: "1" }), ctx);
+      eq([res.status, res.jsonBody.status, res.jsonBody.applyOutcome, res.jsonBody.error], [200, "applied", "applied", null]);
+      eq(graphCalls.length, 2); assert(logs.some(l => /snapshot refresh after proposal 1 failed: refresh down/.test(l)), logs.join("\n"));
     });
     await test("apply: group_add / group_remove proposals write the membership and refresh entra.group_members", async () => {
       reset(); db.proposals.set(1, proposal(1, { status: "accepted", kind: "group_add", field: null, group_id: GID, current_value: null, proposed_value: null, source: "rule", rule_id: 3 }));
@@ -341,12 +362,19 @@ module.exports = async () => {
       res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E300", userObjectId: UID2 }), ctx);
       eq([res.status, res.jsonBody.error, res.jsonBody.employeeId], [409, "user_already_linked", "E200"]); eq(audits.length, 0);
       eq((await A.entraLinkCreate(req(admin, {}, { employeeId: "E300", userObjectId: "33333333-3333-3333-3333-333333333333" }), ctx)).status, 404);
+      reset(); db.proposals.set(1, proposal(1, { employee_id: "E200", user_object_id: UID2 }));
+      res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E200", userObjectId: UID2 }), ctx);
+      eq([res.status, res.jsonBody.method], [200, "manual"]); eq(audits.length, 0); eq(db.proposals.get(1).status, "proposed", "re-posting the same manual link changes nothing");
+      reset(); pool = fakePool((text, inputs) => { if (same(text.trim(), S.LINK_MANUAL_SQL)) { db.links.set("E400", linkRow("E400", UID3, "manual")); throw Object.assign(new Error("Cannot insert duplicate key row"), { number: 2601 }); } return answer(text, inputs); });
+      res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E300", userObjectId: UID3 }), ctx);
+      eq([res.status, res.jsonBody.error, res.jsonBody.employeeId], [409, "user_already_linked", "E400"], "a concurrent link of the same user is a 409, not a 503");
       reset();
       res = await A.entraLinkDelete(req(admin, { employeeId: "E100" }), ctx);
       eq([res.status, res.jsonBody], [200, { employeeId: "E100", unlinked: true }]); assert(!db.links.has("E100")); eq(db.proposals.get(1).status, "stale");
       eq(audits.map(a => [a.endpoint, a.employeeId]), [["DELETE /hub/entra/links/{employeeId}", "E100"]]);
       eq((await A.entraLinkDelete(req(admin, { employeeId: "E100" }), ctx)).status, 404);
       assert(/DELETE FROM entra.links WHERE employee_id = @employeeId/.test(S.LINK_MANUAL_SQL) && /status = 'stale'/.test(S.LINK_MANUAL_SQL) && /'manual'/.test(S.LINK_MANUAL_SQL));
+      assert(/JOIN entra.proposals p ON p.proposal_id = r.proposal_id/.test(S.REJECTIONS_PRUNE_SQL) && /p.employee_id IN \(SELECT value FROM OPENJSON\(@employees\)\)/.test(S.REJECTIONS_PRUNE_SQL), "rejections are pruned per compared employee only");
     });
     await test("store SQL: proposal upsert matches open rows by hash only, never reopens decided rows; stale never touches applying; auto links never overwrite manual", () => {
       assert(/ON t.dedupe_hash = s.dedupe_hash AND t.status IN \('proposed', 'accepted', 'applying', 'blocked'\)/.test(S.PROPOSALS_UPSERT_SQL));

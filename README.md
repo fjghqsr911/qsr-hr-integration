@@ -312,7 +312,7 @@ for a user holding a directory role, say) end as `failed` with status + code onl
 adds the `Entra.Admin` app role to the hrint-api registration (existing roles kept) and assigns it to `ENTRA_ADMINS`.
 
 **Order of operations**: scripts 18 (with the store CSV), 19, 20 on `sqldb-hrint` -> `01-entra-graph-permissions.sh` -> `ENTRA_SYNC_ENABLED=true` ->
-`POST /api/hub/entra/sync` and check the `entra` row of `GET /api/hub/diagnostics` (token + `GET /organization` probe, last run age, counts: users,
+`POST /api/hub/entra/sync` and check the `entra` row of `GET /api/hub/diagnostics` (token + `GET /users?$top=1` probe, last run age, counts: users,
 linked, unlinked with email, orphans, proposed, due, failed, blocked) -> `02-entra-admin-role.sh` -> review proposals -> `ENTRA_WRITE_ENABLED=true`.
 
 Tests: `test/compare.test.js`, `test/link.test.js`, `test/graph.test.js` (stubbed fetch), `test/entraSync.test.js`, `test/entraAdmin.test.js`; mocks only.

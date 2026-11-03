@@ -33,7 +33,7 @@ module.exports = async () => {
       async latestEvents() { return s.events; },
       async upsertProposals(rows) { let n = 0; for (const r of rows) { const open = [...s.proposalMap.values()].find(p => p.dedupeHash === r.dedupeHash && ["proposed", "accepted", "applying", "blocked"].includes(p.status)); if (open) { open.seen = (open.seen ?? 1) + 1; continue; } s.proposalMap.set(s.nextId, { proposalId: s.nextId, ...r }); s.nextId++; n++; } return n; },
       async staleProposals(ids) { let n = 0; for (const id of ids) { const p = s.proposalMap.get(id); if (p && ["proposed", "accepted", "blocked"].includes(p.status)) { p.status = "stale"; n++; } } return n; },
-      async pruneRejections(keep) { let n = 0; for (const h of [...s.rejectionSet]) if (!keep.includes(h)) { s.rejectionSet.delete(h); n++; } return n; }
+      async pruneRejections(employees, keep) { s.prunedFor = employees; let n = 0; for (const h of [...s.rejectionSet]) if (!keep.includes(h)) { s.rejectionSet.delete(h); n++; } return n; }
     };
     return s;
   };
@@ -55,6 +55,7 @@ module.exports = async () => {
   await test("sync run: snapshot (users per domain, groups, members of managed groups only) -> links -> proposals; run row carries the counts; nothing written to Graph", async () => {
     logs.length = 0;
     const store = memStore({ directory: [dir("E1", "pat@qsrgroup.ca"), dir("E2", "sam@qsrgroup.ca", { jobTitle: "Assistant Manager" }), dir("E3", null)], groups: [["g1", { id: "g1", managed: true }], ["g2", { id: "g2", managed: false }]], events: new Map([["E2", 55]]) });
+    store.groupMap.set("g9", { id: "g9", managed: true });                      // managed in the hub, deleted in Entra: skipped, not fatal
     const graph = fakeGraph({ users: [gu("u1", "pat@qsrgroup.ca"), gu("u2", "sam@qsrgroup.ca"), gu("u9", "orphan@qsrgroup.ca")], groups: [{ id: "g1", displayName: "GMs", groupTypes: [], securityEnabled: true, mailEnabled: false, isAssignableToRole: false }, { id: "g2", displayName: "Other", groupTypes: [], securityEnabled: true, mailEnabled: false, isAssignableToRole: false }], members: { g1: ["u1"] } });
     const r = await runEntraSync(store, graph, opts({ domains: ["qsrgroup.ca", "other.test"] }));
     eq([r.status, r.message], ["succeeded", undefined]);
@@ -76,6 +77,7 @@ module.exports = async () => {
     eq([r.proposalsNew, r.proposalsStale, r.proposalsBlocked, r.proposalsOpen], [1, 1, 1, 0]);
     eq(store.proposalMap.get(7).status, "stale"); eq(store.proposalMap.get(8).status, "applying", "applying rows are never staled");
     eq([...store.rejectionSet], [h], "the rejection still suppressing a live difference is kept; the other is pruned");
+    eq(store.prunedFor, ["E1", "E2"], "pruning is scoped to the employees compared with a live user");
     const blocked = [...store.proposalMap.values()].find(p => p.status === "blocked");
     eq([blocked.employeeId, blocked.field], ["E2", "department"]);
     r = await runEntraSync(store, graph, opts());
@@ -90,6 +92,11 @@ module.exports = async () => {
     const r = await runEntraSync(store, graph, opts({ trigger: "timer" }));
     eq([r.status, r.trigger, r.runId, r.message], ["failed", "timer", "r1", "Graph 403 on GET /users"]);
     eq([store.runs[0].status, store.runs[0].error], ["failed", "Graph 403 on GET /users"]);
+    store = memStore({ directory: [dir("E1", "pat@qsrgroup.ca")], links: [["E1", { employeeId: "E1", userObjectId: "u1", method: "matched_email", matchedEmail: "pat@qsrgroup.ca" }]], rejections: ["keep-me"] });
+    store.userMap.set("u1", { ...gu("u1", "pat@qsrgroup.ca"), fetchedUtc: new Date(0), missing: false });
+    const empty = await runEntraSync(store, fakeGraph({ users: [] }), opts());
+    eq(empty.status, "failed"); assert(/Graph listed no users/.test(empty.message), empty.message);
+    assert(!store.userMap.get("u1").missing && [...store.rejectionSet].length === 1 && store.linkMap.size === 1, "an empty listing changes nothing: no users marked missing, no rejections pruned, links kept");
   });
 
   // ---------------------------------------------------------------- functions: timer, hook, endpoint ----------------------------------------------------------------

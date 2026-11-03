@@ -11,6 +11,9 @@ import { GraphGroup, GraphUser } from "../graph";
 */
 
 export const OPEN_STATUS_LIST = "'proposed', 'accepted', 'applying', 'blocked'";
+/** An applying row older than this is stuck (crash between claim and finish): it may be claimed again or rejected. */
+export const STUCK_APPLYING_MINUTES = 15;
+const STUCK_SQL = `(status = 'applying' AND last_seen_utc < DATEADD(minute, -${STUCK_APPLYING_MINUTES}, SYSUTCDATETIME()))`;
 
 export const PROPOSAL_COLUMNS = `proposal_id, employee_id, user_object_id, kind, field, group_id, current_value, proposed_value, due_date, source,
        event_id, rule_id, status, dedupe_hash, proposed_utc, last_seen_utc, decided_by, decided_utc, applied_utc, error`;
@@ -24,17 +27,17 @@ UPDATE entra.proposals SET status = 'accepted', decided_by = @by, decided_utc = 
 OUTPUT ${INSERTED}
 WHERE proposal_id = @id AND status = 'proposed';`;
 
-/** proposed | accepted -> rejected, plus the rejection row (same transaction). */
+/** proposed | accepted (or stuck applying) -> rejected; the rejection row follows. */
 export const PROPOSAL_REJECT_SQL = `
 UPDATE entra.proposals SET status = 'rejected', decided_by = @by, decided_utc = SYSUTCDATETIME()
 OUTPUT ${INSERTED}
-WHERE proposal_id = @id AND status IN ('proposed', 'accepted');`;
+WHERE proposal_id = @id AND (status IN ('proposed', 'accepted') OR ${STUCK_SQL});`;
 
-/** accepted -> applying, only when due. */
+/** accepted (or stuck applying) -> applying, only when due; the claim is stamped so a stuck row can be told from a live one. */
 export const PROPOSAL_CLAIM_SQL = `
-UPDATE entra.proposals SET status = 'applying', error = NULL
+UPDATE entra.proposals SET status = 'applying', error = NULL, last_seen_utc = SYSUTCDATETIME()
 OUTPUT ${INSERTED}
-WHERE proposal_id = @id AND status = 'accepted' AND (due_date IS NULL OR due_date <= @today);`;
+WHERE proposal_id = @id AND (status = 'accepted' OR ${STUCK_SQL}) AND (due_date IS NULL OR due_date <= @today);`;
 
 export const PROPOSAL_FINISH_SQL = `
 UPDATE entra.proposals SET status = @status, applied_utc = CASE WHEN @status = 'applied' THEN SYSUTCDATETIME() ELSE applied_utc END,
@@ -175,8 +178,12 @@ MERGE entra.rejections WITH (HOLDLOCK) AS t USING (SELECT CONVERT(binary(32), @h
 WHEN MATCHED THEN UPDATE SET proposal_id = @proposalId, rejected_by = @by, rejected_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT (dedupe_hash, proposal_id, rejected_by) VALUES (s.dedupe_hash, @proposalId, @by);`;
 
+/** Rejections of the employees compared in this run whose difference is gone (the rejection row points at the rejected proposal). */
 export const REJECTIONS_PRUNE_SQL = `
-DELETE FROM entra.rejections WHERE dedupe_hash NOT IN (SELECT CONVERT(binary(32), value, 2) FROM OPENJSON(@keep));
+DELETE r FROM entra.rejections r
+JOIN entra.proposals p ON p.proposal_id = r.proposal_id
+WHERE p.employee_id IN (SELECT value FROM OPENJSON(@employees))
+  AND r.dedupe_hash NOT IN (SELECT CONVERT(binary(32), value, 2) FROM OPENJSON(@keep));
 SELECT @@ROWCOUNT AS pruned;`;
 
 const dateOnly = (v: any): string | null => (v ? (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10)) : null);
@@ -267,7 +274,7 @@ export interface EntraStore {
   latestEvents(today: string): Promise<Map<string, number>>;
   upsertProposals(rows: ProposalCandidate[]): Promise<number>;
   staleProposals(ids: number[]): Promise<number>;
-  pruneRejections(keepHashes: string[]): Promise<number>;
+  pruneRejections(comparedEmployees: string[], keepHashes: string[]): Promise<number>;
 }
 
 export class SqlEntraStore implements EntraStore {
@@ -361,8 +368,9 @@ export class SqlEntraStore implements EntraStore {
     const r = await this.pool.request().input("ids", sql.NVarChar(sql.MAX), JSON.stringify(ids)).query(PROPOSALS_STALE_SQL);
     return Number(r.recordset?.[0]?.staled ?? 0);
   }
-  async pruneRejections(keepHashes: string[]): Promise<number> {
-    const r = await this.pool.request().input("keep", sql.NVarChar(sql.MAX), JSON.stringify(keepHashes)).query(REJECTIONS_PRUNE_SQL);
+  async pruneRejections(comparedEmployees: string[], keepHashes: string[]): Promise<number> {
+    if (!comparedEmployees.length) return 0;
+    const r = await this.pool.request().input("employees", sql.NVarChar(sql.MAX), JSON.stringify(comparedEmployees)).input("keep", sql.NVarChar(sql.MAX), JSON.stringify(keepHashes)).query(REJECTIONS_PRUNE_SQL);
     return Number(r.recordset?.[0]?.pruned ?? 0);
   }
 

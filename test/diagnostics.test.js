@@ -25,7 +25,7 @@ module.exports = async () => {
   let graphFails = null;            // null = GET /organization ok; otherwise the error to throw
   const graphCalls = [];
   const realGraph = require(path.join(DIST, "shared", "graph.js"));
-  stubModule("shared/graph.js", { ...realGraph, buildGraphClient: () => ({ async probeOrganization() { graphCalls.push("GET /organization"); if (graphFails) throw graphFails; return 42; } }) });
+  stubModule("shared/graph.js", { ...realGraph, buildGraphClient: () => ({ async probeDirectory() { graphCalls.push("GET /users?$top=1"); if (graphFails) throw graphFails; return 42; } }) });
   stubModule("shared/connectors.js", {
     clearviewCredentials: () => creds,
     buildClearviewClient: () => ({
@@ -249,7 +249,7 @@ module.exports = async () => {
     await test("diagnostics: entra enabled -> probe runs; pass with a recent run; no run or run older than 26 h -> warn; failed proposals -> warn", async () => {
       reset(); process.env.ENTRA_SYNC_ENABLED = "true"; process.env.ENTRA_WRITE_ENABLED = "true"; pool = entraPool({ users: 120, linked: 100 }, recentRun());
       let e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq([e.status, e.enabled, e.writeEnabled, e.api], ["pass", true, true, { status: "pass", ms: 42 }]); eq(graphCalls, ["GET /organization"]);
+      eq([e.status, e.enabled, e.writeEnabled, e.api], ["pass", true, true, { status: "pass", ms: 42 }]); eq(graphCalls, ["GET /users?$top=1"]);
       eq([e.lastRun.status, e.lastRun.trigger, e.lastRun.runId], ["succeeded", "timer", "11111111-2222-3333-4444-555555555555"]);
       assert(e.lastRun.ageHours >= 0.9 && e.lastRun.ageHours <= 1.1, String(e.lastRun.ageHours)); assert(!("detail" in e), e.detail);
       reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = entraPool({ users: 120 });
@@ -269,10 +269,10 @@ module.exports = async () => {
     await test("diagnostics: entra probe with a snapshot while disabled; Graph failure -> fail; SQL down -> fail when enabled, warn when disabled", async () => {
       reset(); pool = entraPool({ users: 5 }, recentRun());
       let e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq([e.status, e.api.status], ["warn", "pass"]); eq(graphCalls, ["GET /organization"], "a snapshot means the probe runs even while disabled");
-      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; graphFails = new Error("Graph 403 on GET /organization: Authorization_RequestDenied"); pool = entraPool({ users: 5 }, recentRun());
+      eq([e.status, e.api.status], ["warn", "pass"]); eq(graphCalls, ["GET /users?$top=1"], "a snapshot means the probe runs even while disabled");
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; graphFails = new Error("Graph 403 on GET /users: Authorization_RequestDenied"); pool = entraPool({ users: 5 }, recentRun());
       e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq([e.status, e.api], ["fail", { status: "fail", detail: "Graph 403 on GET /organization: Authorization_RequestDenied" }]);
+      eq([e.status, e.api], ["fail", { status: "fail", detail: "Graph 403 on GET /users: Authorization_RequestDenied" }]);
       reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = fakePool((text) => { if (text === ENTRA_COUNTS_SQL) throw new Error("Invalid object name entra.users"); return allGranted(text); });
       e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
       eq([e.status, e.counts, e.lastRun], ["fail", null, null]); assert(/entra tables unavailable: Invalid object name/.test(e.detail), e.detail);
