@@ -3,7 +3,7 @@ process.env.ALLOW_LOCAL_NO_AUTH = "false";
 delete process.env.WEBSITE_INSTANCE_ID;
 delete process.env.ALLOWED_CLIENT_IDS;
 delete process.env.HUB_STORE_BIRTHDAY;
-for (const k of Object.keys(process.env)) if (k.startsWith("CLEARVIEW_")) delete process.env[k];
+for (const k of Object.keys(process.env)) if (k.startsWith("CLEARVIEW_") || k.startsWith("ENTRA_")) delete process.env[k];
 
 const { summary } = require("./helpers");
 
@@ -17,6 +17,11 @@ const { summary } = require("./helpers");
   await require("./clearview-connector.test.js")();
   await require("./clearview-function.test.js")();
   await require("./diagnostics.test.js")();
+  await require("./compare.test.js")();
+  await require("./link.test.js")();
+  await require("./graph.test.js")();
+  await require("./entraSync.test.js")();
+  await require("./entraAdmin.test.js")();
   const { passed, failed } = summary();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

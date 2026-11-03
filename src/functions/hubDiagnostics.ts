@@ -6,6 +6,8 @@ import { ukgGet, UkgError } from "../shared/ukg";
 import { probeAudit } from "../shared/audit";
 import { buildClearviewClient, clearviewCredentials } from "../shared/connectors";
 import { STATS_SQL } from "../shared/deliveryStore";
+import { buildGraphClient } from "../shared/graph";
+import { torontoToday } from "../shared/entra/compare";
 
 // GET /api/hub/diagnostics - component health for the monitor's Diagnostics tab.
 //
@@ -38,10 +40,32 @@ export const GRANTS: ReadonlyArray<{ column: string; object: string; permission:
   { column: "xrefUpdate", object: "xref.employees", permission: "UPDATE" },
   { column: "destinationCodesInsert", object: "ref.destination_codes", permission: "INSERT" },
   { column: "workforceEventsSelect", object: "rpt.workforce_events", permission: "SELECT" },
-  { column: "employmentCurrentSelect", object: "stage.employment_current", permission: "SELECT" }
+  { column: "employmentCurrentSelect", object: "stage.employment_current", permission: "SELECT" },
+  // Entra sync (provisioning/18, 19, 20)
+  { column: "entraUsersInsert", object: "entra.users", permission: "INSERT" },
+  { column: "entraProposalsUpdate", object: "entra.proposals", permission: "UPDATE" },
+  { column: "entraLinksDelete", object: "entra.links", permission: "DELETE" },
+  { column: "entraSyncRunsInsert", object: "entra.sync_runs", permission: "INSERT" },
+  { column: "storesSelect", object: "ref.stores", permission: "SELECT" },
+  { column: "directorySelect", object: "rpt.v_directory", permission: "SELECT" }
 ];
 export const GRANTS_SQL = `SELECT ${GRANTS.map(g => `HAS_PERMS_BY_NAME('${g.object}','OBJECT','${g.permission}') AS ${g.column}`).join(", ")};`;
 export const CODES_COUNT_SQL = `SELECT code_type, COUNT(*) AS n FROM ref.destination_codes WHERE destination = @destination GROUP BY code_type;`;
+
+/** Entra counts (one row) and the latest sync run. Read-only. */
+export const ENTRA_COUNTS_SQL = `
+SELECT
+  (SELECT COUNT(*) FROM entra.users WHERE missing_since_utc IS NULL) AS users,
+  (SELECT COUNT(*) FROM entra.links) AS linked,
+  (SELECT COUNT(*) FROM rpt.v_directory d WHERE d.work_email IS NOT NULL AND d.employee_status IN ('A', 'L')
+     AND NOT EXISTS (SELECT 1 FROM entra.links l WHERE l.employee_id = d.employee_id)) AS unlinked_with_email,
+  (SELECT COUNT(*) FROM entra.users u WHERE u.missing_since_utc IS NULL AND NOT EXISTS (SELECT 1 FROM entra.links l WHERE l.user_object_id = u.object_id)) AS orphans,
+  (SELECT COUNT(*) FROM entra.proposals WHERE status = 'proposed') AS proposed,
+  (SELECT COUNT(*) FROM entra.proposals WHERE status = 'accepted' AND (due_date IS NULL OR due_date <= @today)) AS due,
+  (SELECT COUNT(*) FROM entra.proposals WHERE status = 'failed') AS failed,
+  (SELECT COUNT(*) FROM entra.proposals WHERE status = 'blocked') AS blocked;`;
+export const ENTRA_LAST_RUN_SQL = `SELECT TOP 1 run_id, started_utc, finished_utc, status, trigger_kind, error_summary FROM entra.sync_runs ORDER BY started_utc DESC;`;
+export const ENTRA_RUN_WARN_HOURS = 26;
 
 const errText = (e: any) => String(e?.message ?? "error").slice(0, 200);
 const timed = async <T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> => {
@@ -180,6 +204,54 @@ export async function checkClearview(now: Date = new Date()): Promise<Component 
   return { name: "clearview", status, enabled, live, authMode: creds.mode, credentials: creds.status, secretExpiresUtc, api, queue, codes, ...(detail ? { detail } : {}) };
 }
 
+/** The Entra sync: token + GET /organization probe (skipped unless the sync is enabled or a snapshot exists), age of the
+ *  last entra.sync_runs row (warn past 26 h when enabled), counts, write switch. Never writes to Graph. */
+export async function checkEntra(now: Date = new Date()): Promise<Component> {
+  const enabled = config.entraSyncEnabled, writeEnabled = config.entraWriteEnabled;
+  const notes: string[] = [];
+  let counts: Record<string, number> | null = null;
+  let lastRun: { runId: string; startedUtc: string; finishedUtc: string | null; status: string; trigger: string; ageHours: number } | null = null;
+  let sqlError: string | null = null;
+  try {
+    const pool = await getSharedHubPool();
+    const c: any = await pool.request().input("today", sql.Date, torontoToday(now)).query(ENTRA_COUNTS_SQL);
+    const row = c.recordset?.[0] ?? {};
+    const n = (v: any) => Number(v ?? 0);
+    counts = { users: n(row.users), linked: n(row.linked), unlinkedWithEmail: n(row.unlinked_with_email), orphans: n(row.orphans),
+               proposed: n(row.proposed), due: n(row.due), failed: n(row.failed), blocked: n(row.blocked) };
+    const r: any = await pool.request().query(ENTRA_LAST_RUN_SQL);
+    const run = r.recordset?.[0];
+    if (run) {
+      const started = new Date(run.started_utc);
+      lastRun = { runId: String(run.run_id), startedUtc: started.toISOString(), finishedUtc: run.finished_utc ? new Date(run.finished_utc).toISOString() : null,
+                  status: String(run.status), trigger: String(run.trigger_kind), ageHours: Math.round((now.getTime() - started.getTime()) / 36_000) / 100 };
+    }
+  } catch (e: any) {
+    resetSharedHubPool();
+    sqlError = errText(e);
+  }
+
+  const hasSnapshot = (counts?.users ?? 0) > 0;
+  let api: Component | { status: "skipped"; detail?: string } = { status: "skipped", detail: "sync disabled and no snapshot yet" };
+  if (enabled || hasSnapshot) {
+    try { api = { status: "pass", ms: await buildGraphClient().probeOrganization() }; }
+    catch (e: any) { api = { status: "fail", detail: errText(e) }; }
+  }
+
+  let runStale = false;
+  if (!enabled) notes.push("ENTRA_SYNC_ENABLED is not \"true\": timer and after-sync runs are off");
+  if (enabled && !lastRun && !sqlError) { notes.push("no Entra sync run yet: run POST /api/hub/entra/sync"); runStale = true; }
+  if (lastRun && lastRun.ageHours > ENTRA_RUN_WARN_HOURS && enabled) { notes.push(`last Entra sync ${Math.round(lastRun.ageHours)} h ago`); runStale = true; }
+  if (lastRun?.status === "failed") notes.push("last Entra sync failed");
+  if (counts && counts.failed > 0) notes.push(`${counts.failed} proposal(s) failed to apply`);
+  if (!writeEnabled) notes.push("ENTRA_WRITE_ENABLED is not \"true\": accepted proposals are not pushed to Entra");
+
+  const status: ComponentStatus = api.status === "fail" || (sqlError && enabled) ? "fail"
+    : (sqlError || !enabled || runStale || lastRun?.status === "failed" || (counts?.failed ?? 0) > 0) ? "warn" : "pass";
+  const detail = [sqlError ? `entra tables unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
+  return { status, enabled, writeEnabled, api, lastRun, counts, ...(detail ? { detail } : {}) };
+}
+
 // ---------------------------------------------------------------- endpoint ----------------------------------------------------------------
 export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> {
   const auth = authorize(req, { scope: Scopes.SummaryWrite, anyRole: [Roles.SummaryRead] });
@@ -191,19 +263,19 @@ export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): 
   const guard = async <T extends Component>(p: Promise<T> | T): Promise<T | Component> => {
     try { return await p; } catch (e: any) { return { status: "fail", detail: errText(e) }; }
   };
-  const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview] = await Promise.all([
+  const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview, entra] = await Promise.all([
     guard(checkSettings(admin)), guard(checkSql()), guard(checkGrants(admin)), guard(checkAudit()),
-    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview())
+    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview()), guard(checkEntra())
   ]);
 
   const body = {
     checkedUtc: new Date().toISOString(),
-    caller: callerStatus, settings, sql, grants, audit, ukg, sync,
+    caller: callerStatus, settings, sql, grants, audit, ukg, sync, entra,
     destinations: [{ name: "clearview", ...clearview }] as Component[]      // Rosnet joins in phase 6
   };
   const statuses = [callerStatus, settings, sql, grants, audit, ukg, sync].map(c => c.status);
   const ok = statuses.filter(s => s === "pass").length, fail = statuses.filter(s => s === "fail").length;
-  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail} clearview=${clearview.status}`);
+  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail} clearview=${clearview.status} entra=${entra.status}`);
   return { status: 200, headers: NO_STORE, jsonBody: body };
 }
 

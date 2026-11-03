@@ -22,6 +22,10 @@ module.exports = async () => {
   let creds = noCreds();
   let clearviewFails = null;        // null = GET /organization/stores ok; otherwise the error to throw
   const clearviewCalls = [];
+  let graphFails = null;            // null = GET /organization ok; otherwise the error to throw
+  const graphCalls = [];
+  const realGraph = require(path.join(DIST, "shared", "graph.js"));
+  stubModule("shared/graph.js", { ...realGraph, buildGraphClient: () => ({ async probeOrganization() { graphCalls.push("GET /organization"); if (graphFails) throw graphFails; return 42; } }) });
   stubModule("shared/connectors.js", {
     clearviewCredentials: () => creds,
     buildClearviewClient: () => ({
@@ -30,7 +34,7 @@ module.exports = async () => {
     }),
     runConnector: async () => { throw new Error("not in this test"); }, runDiscovery: async () => { throw new Error("not in this test"); }
   });
-  const { hubDiagnostics, GRANTS_SQL, GRANTS, CODES_COUNT_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
+  const { hubDiagnostics, GRANTS_SQL, GRANTS, CODES_COUNT_SQL, ENTRA_COUNTS_SQL, ENTRA_LAST_RUN_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
   const { STATS_SQL } = require(path.join(DIST, "shared", "deliveryStore.js"));
 
   const principal = (claims) => Buffer.from(JSON.stringify({ claims })).toString("base64");
@@ -47,7 +51,7 @@ module.exports = async () => {
 
   const SETTINGS = ["UKG_BASE_URL", "UKG_USERNAME", "UKG_PASSWORD", "UKG_CUSTOMER_API_KEY", "HUB_SQL_SERVER", "HUB_SQL_DATABASE", "AUDIT_STORAGE_ACCOUNT"];
   const saved = {};
-  for (const k of [...SETTINGS, "HUB_SYNC_ENABLED", "ALLOWED_CLIENT_IDS", "CLEARVIEW_ENABLED", "CLEARVIEW_LIVE_ENABLED"]) saved[k] = process.env[k];
+  for (const k of [...SETTINGS, "HUB_SYNC_ENABLED", "ALLOWED_CLIENT_IDS", "CLEARVIEW_ENABLED", "CLEARVIEW_LIVE_ENABLED", "ENTRA_SYNC_ENABLED", "ENTRA_WRITE_ENABLED"]) saved[k] = process.env[k];
   const granted = (over = {}) => ({ recordset: [{ ...Object.fromEntries(GRANTS.map(g => [g.column, 1])), ...over }] });
   const allGranted = (text) => /HAS_PERMS_BY_NAME/.test(text) ? granted() :
     text === STATS_SQL ? { recordset: [{ pending: 3, waiting: 1, failed: 0, dead: 2, oldest_pending_minutes: 95 }] } :
@@ -56,6 +60,7 @@ module.exports = async () => {
     for (const k of SETTINGS) process.env[k] = `test-${k.toLowerCase()}`;
     process.env.HUB_SYNC_ENABLED = "true"; delete process.env.ALLOWED_CLIENT_IDS;
     process.env.CLEARVIEW_ENABLED = "true"; process.env.CLEARVIEW_LIVE_ENABLED = "false";
+    delete process.env.ENTRA_SYNC_ENABLED; delete process.env.ENTRA_WRITE_ENABLED; graphFails = null; graphCalls.length = 0;
     creds = noCreds(); clearviewFails = null; clearviewCalls.length = 0;
     pool = fakePool(allGranted); ukgFails = null; auditFails = null; auditWrites = 0; resets = 0; logs.length = 0;
   };
@@ -79,7 +84,7 @@ module.exports = async () => {
       eq(res.status, 200); eq(res.headers["Cache-Control"], "no-store");
       const b = res.jsonBody;
       assert(typeof b.checkedUtc === "string" && !Number.isNaN(Date.parse(b.checkedUtc)), "checkedUtc");
-      eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "grants", "settings", "sql", "sync", "ukg"]);
+      eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "entra", "grants", "settings", "sql", "sync", "ukg"]);
       eq(COMPONENTS.map(c => b[c].status), COMPONENTS.map(() => "pass"));
       eq(b.destinations.length, 1); eq(b.destinations[0].name, "clearview");
       eq(b.caller, { status: "pass", kind: "delegated", clientAppId: "monitor-app", clientAllowed: true });
@@ -87,10 +92,10 @@ module.exports = async () => {
       eq(b.audit.ms, 7);
       assert(typeof b.sql.ms === "number" && typeof b.ukg.ms === "number", "sql / ukg carry ms");
       assert(!("missing" in b.settings) && !("unresolved" in b.settings) && !("missing" in b.grants), "readers never see setting / grant names");
-      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL].sort());
+      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL, ENTRA_COUNTS_SQL, ENTRA_LAST_RUN_SQL].sort());
       assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
       eq(auditWrites, 0, "diagnostics never writes an audit record");
-      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn$/.test(logs[0]), logs[0]);
+      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: admin caller gets missing / unresolved arrays (empty when all is well)", async () => {
@@ -135,7 +140,7 @@ module.exports = async () => {
       const res = await hubDiagnostics(req(reader), ctx);
       eq(res.status, 200); eq(res.jsonBody.audit, { status: "fail", detail: "table unreachable" });
       eq(res.jsonBody.sql.status, "pass"); eq(auditWrites, 0);
-      assert(/ok=6 fail=1 clearview=warn$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=1 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: SQL down -> sql and grants fail, pool reset, other components unaffected, 200", async () => {
@@ -164,7 +169,7 @@ module.exports = async () => {
       reset(); process.env.HUB_SYNC_ENABLED = "false";
       const b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
       eq(b.sync.status, "warn"); eq(b.sync.enabled, false);
-      assert(/ok=6 fail=0 clearview=warn$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=0 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
       reset(); process.env.ALLOWED_CLIENT_IDS = "other-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.detail, "client_app_not_allowed");
       process.env.ALLOWED_CLIENT_IDS = "other-app, monitor-app";
@@ -220,6 +225,62 @@ module.exports = async () => {
       reset(); creds = allCreds({ secretExpires: { SWN6T: far, SWNGK: far } });
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq(d.status, "pass"); eq(d.secretExpiresUtc, new Date(far).toISOString());
+    });
+
+    // ------------------------------------------------------------ entra ------------------------------------------------------------
+    const entraPool = (counts = {}, run = null) => fakePool((text) =>
+      text === ENTRA_COUNTS_SQL ? { recordset: [{ users: 0, linked: 0, unlinked_with_email: 0, orphans: 0, proposed: 0, due: 0, failed: 0, blocked: 0, ...counts }] } :
+      text === ENTRA_LAST_RUN_SQL ? { recordset: run ? [run] : [] } : allGranted(text));
+    const recentRun = (over = {}) => ({ run_id: "11111111-2222-3333-4444-555555555555", started_utc: new Date(Date.now() - 3600_000), finished_utc: new Date(Date.now() - 3500_000), status: "succeeded", trigger_kind: "timer", ...over });
+
+    await test("diagnostics: entra disabled with no snapshot -> probe skipped, warn, counts from SQL, writeEnabled false, no Graph call", async () => {
+      reset(); pool = entraPool();
+      const e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(Object.keys(e).sort(), ["api", "counts", "detail", "enabled", "lastRun", "status", "writeEnabled"]);
+      eq([e.status, e.enabled, e.writeEnabled, e.lastRun], ["warn", false, false, null]);
+      eq(e.api, { status: "skipped", detail: "sync disabled and no snapshot yet" });
+      eq(e.counts, { users: 0, linked: 0, unlinkedWithEmail: 0, orphans: 0, proposed: 0, due: 0, failed: 0, blocked: 0 });
+      assert(/ENTRA_SYNC_ENABLED is not "true"/.test(e.detail) && /ENTRA_WRITE_ENABLED is not "true"/.test(e.detail), e.detail);
+      eq(graphCalls, [], "Graph is not probed while disabled without a snapshot");
+      assert(pool.calls.filter(c => c.text === ENTRA_COUNTS_SQL).length === 1 && pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
+      assert(/WHERE status = 'proposed'/.test(ENTRA_COUNTS_SQL) && /due_date <= @today/.test(ENTRA_COUNTS_SQL) && /FROM rpt.v_directory/.test(ENTRA_COUNTS_SQL));
+    });
+
+    await test("diagnostics: entra enabled -> probe runs; pass with a recent run; no run or run older than 26 h -> warn; failed proposals -> warn", async () => {
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; process.env.ENTRA_WRITE_ENABLED = "true"; pool = entraPool({ users: 120, linked: 100 }, recentRun());
+      let e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq([e.status, e.enabled, e.writeEnabled, e.api], ["pass", true, true, { status: "pass", ms: 42 }]); eq(graphCalls, ["GET /organization"]);
+      eq([e.lastRun.status, e.lastRun.trigger, e.lastRun.runId], ["succeeded", "timer", "11111111-2222-3333-4444-555555555555"]);
+      assert(e.lastRun.ageHours >= 0.9 && e.lastRun.ageHours <= 1.1, String(e.lastRun.ageHours)); assert(!("detail" in e), e.detail);
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = entraPool({ users: 120 });
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(e.status, "warn"); assert(/no Entra sync run yet/.test(e.detail), e.detail);
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = entraPool({ users: 120 }, recentRun({ started_utc: new Date(Date.now() - 30 * 3600_000) }));
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(e.status, "warn"); assert(/last Entra sync 30 h ago/.test(e.detail), e.detail);
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = entraPool({ users: 120, failed: 2 }, recentRun());
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(e.status, "warn"); assert(/2 proposal\(s\) failed to apply/.test(e.detail), e.detail);
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = entraPool({ users: 120 }, recentRun({ status: "failed" }));
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(e.status, "warn"); assert(/last Entra sync failed/.test(e.detail), e.detail);
+    });
+
+    await test("diagnostics: entra probe with a snapshot while disabled; Graph failure -> fail; SQL down -> fail when enabled, warn when disabled", async () => {
+      reset(); pool = entraPool({ users: 5 }, recentRun());
+      let e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq([e.status, e.api.status], ["warn", "pass"]); eq(graphCalls, ["GET /organization"], "a snapshot means the probe runs even while disabled");
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; graphFails = new Error("Graph 403 on GET /organization: Authorization_RequestDenied"); pool = entraPool({ users: 5 }, recentRun());
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq([e.status, e.api], ["fail", { status: "fail", detail: "Graph 403 on GET /organization: Authorization_RequestDenied" }]);
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = fakePool((text) => { if (text === ENTRA_COUNTS_SQL) throw new Error("Invalid object name entra.users"); return allGranted(text); });
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq([e.status, e.counts, e.lastRun], ["fail", null, null]); assert(/entra tables unavailable: Invalid object name/.test(e.detail), e.detail);
+      reset(); pool = fakePool((text) => { if (text === ENTRA_COUNTS_SQL) throw new Error("Invalid object name entra.users"); return allGranted(text); });
+      e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(e.status, "warn", "not provisioned yet and switched off is a warning, not a failure"); eq(graphCalls, []);
+      for (const g of ["INSERT on entra.users", "UPDATE on entra.proposals", "DELETE on entra.links", "INSERT on entra.sync_runs", "SELECT on ref.stores", "SELECT on rpt.v_directory"])
+        assert(GRANTS.some(x => `${x.permission} on ${x.object}` === g), `grant check covers ${g}`);
     });
   } finally { restore(); }
 

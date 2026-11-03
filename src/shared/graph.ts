@@ -53,8 +53,12 @@ type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
 const nz = (v: any): string | null => (v === null || v === undefined || String(v).trim() === "" ? null : String(v).trim());
 
-/** Path for error messages: no query string (filters, select lists), no host. */
-const safePath = (url: string) => { const u = url.replace(/^https?:\/\/[^/]+/, ""); const q = u.indexOf("?"); return (q >= 0 ? u.slice(0, q) : u).slice(0, 120); };
+/** Path for error messages: relative to the Graph base, no query string (filters, select lists), no host. */
+const safePath = (url: string, base: string) => {
+  const u = url.startsWith(base) ? url.slice(base.length) : url.replace(/^https?:\/\/[^/]+/, "");
+  const q = u.indexOf("?");
+  return (q >= 0 ? u.slice(0, q) : u).slice(0, 120);
+};
 
 /** Seconds to wait from a Retry-After header (seconds or HTTP date); null when absent or unreadable. */
 export function retryAfterMs(header: string | null, now: number): number | null {
@@ -138,12 +142,12 @@ export class GraphClient {
         clearTimeout(timer);
         const timeout = e?.name === "AbortError";
         if (!timeout && attempt < MAX_RETRIES) { await this.sleep(1000 * (attempt + 1)); continue; }
-        throw new GraphError(0, timeout ? "timeout" : "network", `Graph ${timeout ? "timeout" : "network error"} on ${method} ${safePath(url)}`);
+        throw new GraphError(0, timeout ? "timeout" : "network", `Graph ${timeout ? "timeout" : "network error"} on ${method} ${safePath(url, this.opts.baseUrl)}`);
       }
       clearTimeout(timer);
       if (RETRYABLE.has(res.status) && attempt < MAX_RETRIES) {
         const wait = retryAfterMs(res.headers.get("retry-after"), this.now()) ?? 1000 * (attempt + 1);
-        this.log(`[graph] ${res.status} on ${method} ${safePath(url)}: retry in ${Math.round(wait / 1000)} s`);
+        this.log(`[graph] ${res.status} on ${method} ${safePath(url, this.opts.baseUrl)}: retry in ${Math.round(wait / 1000)} s`);
         await this.sleep(wait);
         continue;
       }
@@ -152,7 +156,7 @@ export class GraphClient {
       if (text) { try { body = JSON.parse(text); } catch { body = null; } }
       if (!res.ok) {
         const code = nz(body?.error?.code);
-        const err = new GraphError(res.status, code, `Graph ${res.status} on ${method} ${safePath(url)}${code ? `: ${code}` : ""}`);
+        const err = new GraphError(res.status, code, `Graph ${res.status} on ${method} ${safePath(url, this.opts.baseUrl)}${code ? `: ${code}` : ""}`);
         err.alreadyExists = res.status === 400 && /already exist/i.test(String(body?.error?.message ?? ""));
         throw err;
       }
@@ -169,7 +173,7 @@ export class GraphClient {
       const { body } = await this.call<any>("GET", next, { headers });
       for (const v of body?.value ?? []) out.push(v as T);
       next = nz(body?.["@odata.nextLink"]);
-      if (++pages > 1000) throw new GraphError(0, "paging", `Graph paging did not end on GET ${safePath(path)}`);
+      if (++pages > 1000) throw new GraphError(0, "paging", `Graph paging did not end on GET ${safePath(path, this.opts.baseUrl)}`);
     }
     return out;
   }

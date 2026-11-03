@@ -97,9 +97,12 @@ DELETE FROM entra.group_members WHERE group_id IN (SELECT object_id FROM entra.g
 DELETE FROM entra.groups WHERE fetched_utc < @fetchedUtc AND managed = 0 AND NOT EXISTS (SELECT 1 FROM entra.rules r WHERE r.group_id = entra.groups.object_id);`;
 
 export const GROUP_MEMBERS_REPLACE_SQL = `
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
 DELETE FROM entra.group_members WHERE group_id = @groupId;
 INSERT INTO entra.group_members (group_id, user_id, fetched_utc) SELECT @groupId, value, @fetchedUtc FROM OPENJSON(@ids);
-UPDATE entra.groups SET member_count = (SELECT COUNT(*) FROM entra.group_members WHERE group_id = @groupId), members_fetched_utc = @fetchedUtc WHERE object_id = @groupId;`;
+UPDATE entra.groups SET member_count = (SELECT COUNT(*) FROM entra.group_members WHERE group_id = @groupId), members_fetched_utc = @fetchedUtc WHERE object_id = @groupId;
+COMMIT TRANSACTION;`;
 
 export const LINKS_REPLACE_AUTO_SQL = `
 /* auto links the sync no longer wants (never a manual one) */
@@ -119,9 +122,12 @@ INSERT INTO entra.link_issues (employee_id, user_object_id, kind, detail)
 SELECT employeeId, userObjectId, kind, detail FROM OPENJSON(@rows) WITH (employeeId varchar(20), userObjectId varchar(36), kind varchar(30), detail nvarchar(300));`;
 
 export const LINK_MANUAL_SQL = `
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
 UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN ('proposed', 'accepted', 'blocked');
 DELETE FROM entra.links WHERE employee_id = @employeeId;
 INSERT INTO entra.links (employee_id, user_object_id, method, matched_email, linked_by) VALUES (@employeeId, @userObjectId, 'manual', NULL, @by);
+COMMIT TRANSACTION;
 SELECT employee_id, user_object_id, method, matched_email, linked_utc, linked_by FROM entra.links WHERE employee_id = @employeeId;`;
 
 export const LINK_DELETE_SQL = `
@@ -306,12 +312,7 @@ export class SqlEntraStore implements EntraStore {
   }
 
   async replaceGroupMembers(groupId: string, userIds: string[], fetchedUtc: Date): Promise<void> {
-    const tx = new sql.Transaction(this.pool);
-    await tx.begin();
-    try {
-      await new sql.Request(tx).input("groupId", sql.VarChar(36), groupId).input("ids", sql.NVarChar(sql.MAX), JSON.stringify(userIds)).input("fetchedUtc", sql.DateTime2(0), fetchedUtc).query(GROUP_MEMBERS_REPLACE_SQL);
-      await tx.commit();
-    } catch (e) { await tx.rollback().catch(() => {}); throw e; }
+    await this.pool.request().input("groupId", sql.VarChar(36), groupId).input("ids", sql.NVarChar(sql.MAX), JSON.stringify(userIds)).input("fetchedUtc", sql.DateTime2(0), fetchedUtc).query(GROUP_MEMBERS_REPLACE_SQL);
   }
 
   // ---------------- reads ----------------
@@ -431,13 +432,8 @@ export class SqlEntraStore implements EntraStore {
   }
   async deleteRule(id: number): Promise<number> { const r = await this.pool.request().input("id", sql.Int, id).query(RULE_DELETE_SQL); return Number(r.recordset?.[0]?.deleted ?? 0); }
   async linkManual(employeeId: string, userObjectId: string, by: string) {
-    const tx = new sql.Transaction(this.pool);
-    await tx.begin();
-    try {
-      const r = await new sql.Request(tx).input("employeeId", sql.VarChar(20), employeeId).input("userObjectId", sql.VarChar(36), userObjectId).input("by", sql.NVarChar(200), by).query(LINK_MANUAL_SQL);
-      await tx.commit();
-      return r.recordset?.[0] ? mapLinkRow(r.recordset[0]) : null;
-    } catch (e) { await tx.rollback().catch(() => {}); throw e; }
+    const r = await this.pool.request().input("employeeId", sql.VarChar(20), employeeId).input("userObjectId", sql.VarChar(36), userObjectId).input("by", sql.NVarChar(200), by).query(LINK_MANUAL_SQL);
+    return r.recordset?.[0] ? mapLinkRow(r.recordset[0]) : null;
   }
   async unlink(employeeId: string): Promise<number> { const r = await this.pool.request().input("employeeId", sql.VarChar(20), employeeId).query(LINK_DELETE_SQL); return Number(r.recordset?.[0]?.deleted ?? 0); }
   async linkFor(employeeId: string) {
