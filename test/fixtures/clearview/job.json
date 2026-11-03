@@ -1,0 +1,18 @@
+{
+  "name": "job: Promotion TM -> SH; rate carried from the current primary ($lookup), old primary demoted",
+  "delivery": { "action": "job", "eventType": "Promotion", "effectiveDate": "2026-11-01", "store": "T22446" },
+  "event": { "eventType": "Promotion", "effectiveDate": "2026-11-01", "toCompany": "SWN6T", "toStore": "T22446", "fromJob": "TM", "toJob": "SH" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "orgLevel2": "T22446", "jobCode": "SH", "firstName": "Ann", "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "created" },
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": null, "hourlyPayRate": null, "annualSalary": null },
+  "expected": {
+    "operation": "job",
+    "stepMethods": ["GET", "PUT", "POST", "PUT"],
+    "lastStepPath": "/employeeJob/55501/job/$lookup:primaryJobId",
+    "payload": {
+      "add": { "jobCode": 10, "jobStatus": "A", "primaryJob": true, "payRate": "$lookup:currentPrimaryRate", "effectiveDate": "2026-11-01" },
+      "promote": { "jobId": 9444, "primaryJob": true, "jobStatus": "A" },
+      "demote": { "jobId": "$lookup:primaryJobId", "primaryJob": false, "jobStatus": "I" }
+    }
+  }
+}

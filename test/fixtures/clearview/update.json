@@ -1,0 +1,14 @@
+{
+  "name": "update: Part-time to full-time -> JSON Patch empCatCode FullTime",
+  "delivery": { "action": "update", "eventType": "Part-time to full-time", "effectiveDate": "2026-11-01", "store": "T22446" },
+  "event": { "eventType": "Part-time to full-time", "effectiveDate": "2026-11-01", "toCompany": "SWN6T", "toStore": "T22446" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "orgLevel2": "T22446", "jobCode": "TM", "fullOrPartTime": "F", "firstName": "Ann", "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "extract" },
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": null, "hourlyPayRate": null, "annualSalary": null },
+  "expected": {
+    "operation": "update",
+    "stepMethods": ["PATCH"],
+    "lastStepPath": "/employee/55501",
+    "payload": [{ "op": "replace", "path": "empCatCode", "value": "FullTime" }]
+  }
+}

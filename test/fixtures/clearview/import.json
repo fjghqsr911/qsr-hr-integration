@@ -1,0 +1,21 @@
+{
+  "name": "import: new hire Clearview has never seen (no xref) -> staging import with Flexspring's proven minimum + externalId + preferred name",
+  "delivery": { "action": "create", "eventType": "New hire", "effectiveDate": "2026-11-05", "store": "T22446" },
+  "event": { "eventType": "New hire", "effectiveDate": "2026-11-05", "toCompany": "SWN6T", "toStore": "T22446", "toJob": "TM" },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "lastHireDate": "2026-11-05", "orgLevel2": "T22446", "jobCode": "TM", "fullOrPartTime": "P",
+                  "firstName": "Ann", "preferredName": "Annie", "lastName": "Example" },
+  "xref": null,
+  "sensitive": { "sin": "123-456-789", "dateOfBirth": "1987-07-14T00:00:00", "email": "ann@example.com", "salaryOrHourly": "H", "hourlyPayRate": 17.5, "annualSalary": null },
+  "expected": {
+    "operation": "import",
+    "stepMethods": ["GET", "GET", "POST"],
+    "lastStepPath": "/employee/import",
+    "payload": {
+      "standardInformation": { "firstName": "Ann", "lastName": "Example", "preferredFirstName": "Annie", "birthDate": "1987-07-14", "reportingStore": 122446,
+                               "email": "ann@example.com", "employeeStatus": "A", "hireDate": "2026-11-05" },
+      "payAndBenefitInformation": { "employeeNumber": "100234", "sin": "123456789", "calculateOvertimeFlag": "Y" },
+      "jobAndPayInformation": { "primaryJobCode": 1, "payTypeCode": "H", "payRate": 17.5 },
+      "additionalInformation": { "externalId": "EWLTH200NRY0" }
+    }
+  }
+}

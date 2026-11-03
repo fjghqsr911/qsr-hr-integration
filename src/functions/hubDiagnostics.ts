@@ -1,9 +1,11 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { authorize, Caller, describeCaller, Roles, Scopes } from "../shared/auth";
-import { config } from "../shared/config";
-import { getSharedHubPool, resetSharedHubPool } from "../shared/sql";
+import { config, KEY_VAULT_PREFIX } from "../shared/config";
+import { getSharedHubPool, resetSharedHubPool, sql } from "../shared/sql";
 import { ukgGet, UkgError } from "../shared/ukg";
 import { probeAudit } from "../shared/audit";
+import { buildClearviewClient, clearviewCredentials } from "../shared/connectors";
+import { STATS_SQL } from "../shared/deliveryStore";
 
 // GET /api/hub/diagnostics - component health for the monitor's Diagnostics tab.
 //
@@ -21,16 +23,25 @@ export const REQUIRED_SETTINGS = [
   "UKG_BASE_URL", "UKG_USERNAME", "UKG_PASSWORD", "UKG_CUSTOMER_API_KEY",
   "HUB_SQL_SERVER", "HUB_SQL_DATABASE", "AUDIT_STORAGE_ACCOUNT"
 ] as const;
-const KEY_VAULT_PREFIX = "@Microsoft.KeyVault(";                  // an unresolved Key Vault reference is still the literal text
 
-/** The grants the admin endpoints and the sync need (provisioning/15-admin-endpoint-grants.sql). Column -> object + permission. */
+/** The grants the admin endpoints, the sync and the Clearview connector need (provisioning/15 and 16). Column -> object + permission. */
 export const GRANTS: ReadonlyArray<{ column: string; object: string; permission: string }> = [
   { column: "storeModesInsert", object: "ref.store_modes", permission: "INSERT" },
   { column: "storeModesUpdate", object: "ref.store_modes", permission: "UPDATE" },
   { column: "deliveriesUpdate", object: "[out].[deliveries]", permission: "UPDATE" },
-  { column: "syncRunsInsert", object: "stage.sync_runs", permission: "INSERT" }
+  { column: "syncRunsInsert", object: "stage.sync_runs", permission: "INSERT" },
+  { column: "lastSentInsert", object: "[out].[last_sent]", permission: "INSERT" },
+  { column: "lastSentUpdate", object: "[out].[last_sent]", permission: "UPDATE" },
+  { column: "shadowPayloadsInsert", object: "[out].[shadow_payloads]", permission: "INSERT" },
+  { column: "shadowPayloadsDelete", object: "[out].[shadow_payloads]", permission: "DELETE" },
+  { column: "xrefInsert", object: "xref.employees", permission: "INSERT" },
+  { column: "xrefUpdate", object: "xref.employees", permission: "UPDATE" },
+  { column: "destinationCodesInsert", object: "ref.destination_codes", permission: "INSERT" },
+  { column: "workforceEventsSelect", object: "rpt.workforce_events", permission: "SELECT" },
+  { column: "employmentCurrentSelect", object: "stage.employment_current", permission: "SELECT" }
 ];
 export const GRANTS_SQL = `SELECT ${GRANTS.map(g => `HAS_PERMS_BY_NAME('${g.object}','OBJECT','${g.permission}') AS ${g.column}`).join(", ")};`;
+export const CODES_COUNT_SQL = `SELECT code_type, COUNT(*) AS n FROM ref.destination_codes WHERE destination = @destination GROUP BY code_type;`;
 
 const errText = (e: any) => String(e?.message ?? "error").slice(0, 200);
 const timed = async <T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> => {
@@ -108,6 +119,51 @@ function checkCaller(caller: Caller): Component {
   return { status: clientAllowed ? "pass" : "fail", kind: caller.kind, clientAppId: caller.clientAppId, clientAllowed };
 }
 
+/** The Clearview destination: settings, credentials per company, a timed GET /organization/stores (skipped without
+ *  credentials), queue counts and the mapping table counts. Never calls Clearview with a write. */
+export async function checkClearview(): Promise<Component & { name: "clearview" }> {
+  const enabled = config.clearviewEnabled, live = config.clearviewLiveEnabled;
+  const creds = clearviewCredentials();
+  const notes: string[] = [];
+
+  let api: Component | { status: "skipped" } = { status: "skipped" };
+  if (creds.status !== "missing") {
+    const client = buildClearviewClient();
+    const started = Date.now();
+    const failures: string[] = [];
+    for (const company of client.companies()) {
+      try { await client.get(company, "/organization/stores", { includeInactiveStores: false }); }
+      catch (e: any) { failures.push(`${company}: ${errText(e)}`); }
+    }
+    api = failures.length ? { status: "fail", ms: Date.now() - started, detail: failures.join("; ").slice(0, 300) } : { status: "pass", ms: Date.now() - started };
+  } else notes.push("no CLEARVIEW_AUTH_KEY_<COMPANY> set: Clearview not called, live stores run as shadow");
+  if (creds.status === "partial") notes.push(`credentials for ${Object.entries(creds.companies).filter(([, ok]) => !ok).map(([c]) => c).join(", ")} missing: those companies run as shadow`);
+  if (!enabled) notes.push("CLEARVIEW_ENABLED is not \"true\": timer and after-sync runs are off");
+
+  let queue: Record<string, number | null> | null = null;
+  const codes: Record<string, number> = { store: 0, job: 0, termination: 0 };
+  let sqlError: string | null = null;
+  try {
+    const pool = await getSharedHubPool();
+    const stats: any = await pool.request().input("destination", sql.VarChar(20), "clearview").query(STATS_SQL);
+    const row = stats.recordset?.[0] ?? {};
+    const n = (v: any) => Number(v ?? 0);
+    queue = { pending: n(row.pending), waiting: n(row.waiting), failed: n(row.failed), dead: n(row.dead),
+              oldestPendingMinutes: row.oldest_pending_minutes === null || row.oldest_pending_minutes === undefined ? null : Number(row.oldest_pending_minutes) };
+    const counts: any = await pool.request().input("destination", sql.VarChar(20), "clearview").query(CODES_COUNT_SQL);
+    for (const r of counts.recordset ?? []) if (r.code_type in codes) codes[r.code_type] = Number(r.n);
+    if (codes.store === 0) notes.push("no store mappings yet: run POST /api/hub/clearview/discover once a key exists");
+    if (codes.job === 0) notes.push("no job mappings yet: fill provisioning/17-destination-codes-clearview.sql");
+  } catch (e: any) {
+    resetSharedHubPool();
+    sqlError = errText(e);
+  }
+
+  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (creds.status !== "present" || !enabled || codes.store === 0 || codes.job === 0) ? "warn" : "pass";
+  const detail = [sqlError ? `queue unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
+  return { name: "clearview", status, enabled, live, credentials: creds.status, api, queue, codes, ...(detail ? { detail } : {}) };
+}
+
 // ---------------------------------------------------------------- endpoint ----------------------------------------------------------------
 export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> {
   const auth = authorize(req, { scope: Scopes.SummaryWrite, anyRole: [Roles.SummaryRead] });
@@ -116,22 +172,22 @@ export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): 
   const admin = caller.roles.has(Roles.SummaryAdmin);
 
   // Each check catches its own errors; a rejected promise here would be a bug, so still guard the whole set.
-  const guard = async (p: Promise<Component> | Component): Promise<Component> => {
+  const guard = async <T extends Component>(p: Promise<T> | T): Promise<T | Component> => {
     try { return await p; } catch (e: any) { return { status: "fail", detail: errText(e) }; }
   };
-  const [settings, sql, grants, audit, ukg, sync, callerStatus] = await Promise.all([
+  const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview] = await Promise.all([
     guard(checkSettings(admin)), guard(checkSql()), guard(checkGrants(admin)), guard(checkAudit()),
-    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller))
+    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview())
   ]);
 
   const body = {
     checkedUtc: new Date().toISOString(),
     caller: callerStatus, settings, sql, grants, audit, ukg, sync,
-    destinations: [] as Component[]                                   // placeholder for the Clearview / Rosnet connectors
+    destinations: [{ name: "clearview", ...clearview }] as Component[]      // Rosnet joins in phase 6
   };
   const statuses = [callerStatus, settings, sql, grants, audit, ukg, sync].map(c => c.status);
   const ok = statuses.filter(s => s === "pass").length, fail = statuses.filter(s => s === "fail").length;
-  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail}`);
+  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail} clearview=${clearview.status}`);
   return { status: 200, headers: NO_STORE, jsonBody: body };
 }
 
