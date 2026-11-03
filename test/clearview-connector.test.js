@@ -287,7 +287,7 @@ module.exports = async () => {
   });
 
   await test("connector: rehire - GET; active -> no write; rehire date on or before the Clearview termination -> dead; else PUT", async () => {
-    const payload = { rehireDate: "2026-11-10", reportingStoreId: 18, storeAssignments: [{ storeId: 18 }], jobs: [{ jobKey: 9444, payTypeCode: "H", payRate: 17, primaryJobFlag: true }] };
+    const payload = { rehireDate: "2026-11-10", reportingStoreId: 18, storeAssignments: [{ storeId: 18 }], jobs: [{ jobId: 9444, payTypeCode: "H", payRate: 17, primaryJob: true, salaryHours: null }] };
     let f = fakeFetch({ "GET /api/v2/employee/55501": [200, emp("Inactive", { terminationInformation: { terminationDate: "2026-03-01" } })], "PUT /api/v2/employeeStatus/55501/rehire": [200, {}] });
     let r = await connector(f).execute(planOf("rehire", payload), ctxFor());
     eq(seq(f), ["GET /employee/55501", "PUT /employeeStatus/55501/rehire"]); eq(f.calls[1].body, payload); eq(r.responseRef, "rehire:55501");
