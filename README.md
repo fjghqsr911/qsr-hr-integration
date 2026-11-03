@@ -19,7 +19,7 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` delivery as `resolved` (sets `finished_utc`); any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
 | `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
 | `GET/POST /api/hub/clearview/run` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Drain the Clearview delivery queue now (runs even when `CLEARVIEW_ENABLED` is off). Returns the run counts (`claimed`, `sent`, `shadow`, `unchanged`, `skipped`, `review`, `failed`, `dead`, `waiting`, `resolved`, `purged`, `queue`); 502 when the run failed (e.g. Clearview 401). Audited (`write`, field `deliveries`), fail-closed |
-| `POST /api/hub/clearview/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | `codes` (default): per organization key, Clearview's stores (paired on `tdlNumber` and written to `ref.destination_codes`), jobs, termination reasons and mandatory attributes, plus unpaired stores and stale mappings, as a report to fill `provisioning/17`. `employees`: seeds `xref.employees` (`source = extract`) from Clearview's employee list by employee number + last name. Audited (`write`), fail-closed |
+| `POST /api/hub/clearview/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | `codes` (default): per organization key, Clearview's stores (paired on `tdlNumber` and written to `ref.destination_codes`), jobs, termination reasons and mandatory attributes, plus unpaired stores and stale mappings, as a report to fill `provisioning/17`. `employees`: seeds `xref.employees` (`source = extract`) from Clearview's employee list by employee number + last name. 409 while `CLEARVIEW_ENABLED` is not `true` (the first Clearview call starts billing). Audited (`write`), fail-closed |
 | `GET /api/employees/{id}/sensitive?reveal=sin` | `Employees.Sensitive.Read` **and** `Employees.Sensitive.Reveal` | `Sensitive.Admin` | Same, with full SIN |
 
 `{id}` = UKG system employee ID (e.g. `EWLTH200NRY0`), visible in UKG page URLs.
@@ -89,8 +89,12 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `HUB_COMPANY_PHONE_FIELDS` | UKG field(s) for company phone | empty until confirmed |
 | `HUB_STORE_BIRTHDAY` | Store birth month + day (no year) for `/api/hub/roster/contacts` | unset (= `true`); `false` clears birthdays at the next nightly run |
 | `CLEARVIEW_BASE_URL` | Clearview Connect API base | default `https://api.clearviewconnect.com`; UAT `https://api-uat-cv-api-marketplace.azurewebsites.net` |
-| `CLEARVIEW_AUTH_KEY_SWN6T`, `CLEARVIEW_AUTH_KEY_SWNGK` | Clearview `authorizationKey` per UKG company (one Clearview organization each) | Key Vault references. Unset, blank or an unresolved reference (`@Microsoft.KeyVault(` still literal) = missing: that company runs as shadow, nothing is sent |
-| `CLEARVIEW_ENABLED` | Timer + after-sync runs of the connector | `false` until the shadow run is reviewed; manual `/api/hub/clearview/run` always works |
+| `CLEARVIEW_AUTH_MODE` | `oauth` (self-service API connection, OAuth2 client credentials) or `key` (the partner model: `authorizationKey` query parameter, what Flexspring uses) | default `oauth` |
+| `CLEARVIEW_TOKEN_URL`, `CLEARVIEW_SCOPE` | OAuth mode: the Access Token URL and Scope shown on the Clearview Connections page | from Clearview; scope optional |
+| `CLEARVIEW_CLIENT_ID_SWN6T`, `CLEARVIEW_CLIENT_SECRET_SWN6T`, `CLEARVIEW_CLIENT_ID_SWNGK`, `CLEARVIEW_CLIENT_SECRET_SWNGK` | OAuth mode: client id and secret per UKG company (one Clearview organization each). Secrets expire after 24 months | secrets as Key Vault references. Unset, blank or an unresolved reference (`@Microsoft.KeyVault(` still literal) = missing: that company runs as shadow, nothing is sent |
+| `CLEARVIEW_SECRET_EXPIRES_SWN6T`, `CLEARVIEW_SECRET_EXPIRES_SWNGK` | Optional, set by hand from the Clearview page: when each OAuth secret expires (ISO date). Diagnostics warns 60 days ahead and once past | e.g. `2028-11-02` |
+| `CLEARVIEW_AUTH_KEY_SWN6T`, `CLEARVIEW_AUTH_KEY_SWNGK` | Key mode only: Clearview `authorizationKey` per UKG company | Key Vault references; same missing rule as above |
+| `CLEARVIEW_ENABLED` | Timer + after-sync runs, **and the only switch that lets any code path call Clearview** (billing starts at the first call). Off: manual `/api/hub/clearview/run` still works but every store runs as shadow, `discover` answers 409, the diagnostics probe is skipped | `false` until a deliberate first `discover` |
 | `CLEARVIEW_LIVE_ENABLED` | Kill switch: `false` = every store behaves as shadow, even stores set to `live` | `false` until the phase 5 pilot |
 | `CLEARVIEW_COMPANIES` | UKG companies sent to Clearview | default `SWN6T,SWNGK` (`M9WOJ` events become `review`, any other company `skipped`) |
 | `CLEARVIEW_EXCLUDED_JOBS` | UKG job codes never sent | default `MM` |
@@ -197,10 +201,33 @@ Clearview's employee list by employee number + last name (Flexspring never set `
 `destinations[0]` shows enabled / live / credentials, a timed `GET /organization/stores` (skipped without keys), the queue counts
 and how many codes of each type are mapped.
 
-**Two organizations, one key each.** Clearview holds two organizations (store 2462: organizationId 18, employerCode O01189;
-store 6105: organizationId 1690, employerCode STIS). Each has its own `authorizationKey`, set per UKG company as
-`CLEARVIEW_AUTH_KEY_SWN6T` / `CLEARVIEW_AUTH_KEY_SWNGK`; the client picks the key from the employee's company at send time. Which
-company is which organization is confirmed by `discover` (the company row's notes carry the employer code).
+**Authentication: two organizations, one credential each.** Clearview holds two organizations (store 2462: organizationId 18,
+employerCode O01189; store 6105: organizationId 1690, employerCode STIS). Self-service "API Connections" (Clearview Admin →
+Connections) issue **OAuth2 client credentials** per organization: an OAuth Client ID, a Scope, the API base URL, an Access Token
+URL and OAuth Secrets that expire after 24 months. That is `CLEARVIEW_AUTH_MODE = oauth` (default): the client fetches a bearer
+token per organization with the client-credentials grant, caches it until expiry minus 60 s, refreshes it once on a 401 and then
+fails. The `authorizationKey` query parameter in the v2 spec is the *partner* model Flexspring uses; `CLEARVIEW_AUTH_MODE = key`
+keeps it available. The client picks the organization's credential from the employee's company at send time; which company is
+which organization is confirmed by `discover` (the company row's notes carry the employer code).
+
+**Billing.** Every Clearview API connection costs USD per active store per month from its **first API call** after activation
+(no partial months), per organization. So nothing in hrint-api calls Clearview unless `CLEARVIEW_ENABLED` is `true`: the client
+is built without credentials (every run is shadow), `discover` answers 409 and the diagnostics probe reports
+`skipped: connector disabled; first call starts billing`. The first call should be a deliberate `discover`; the client logs
+`[clearview] first call this process org=<company>` once per organization per process and nothing else.
+
+**Three self-service products**, each a separate subscription per organization (the two write products are mandatory; the read
+product is what the connector uses for existing employees and ID resolution):
+
+| Product | Fee (per active store / month) | Endpoints the connector uses |
+|---|---|---|
+| Post New Hires to CLEARVIEW | USD 3 | `POST /employee/import`, `GET /employee/import/{n}/status`, `GET /organization/stores`, `GET /store/{id}`, `GET /job`, `GET /organization/filecontrol` (the import and all of discovery) |
+| Post Updates to Existing Employees | USD 3 | `PATCH /employee/{id}`, `POST /employeeStatus/{id}/terminate`, `PUT …/terminate`, `POST /employeeStoreAssignment/{id}`, `PUT …/assignment/{aid}`, `POST /employeeJob/{id}/job`, `PUT …/job/{jobId}`, `POST …/pay`, `PUT …/pay/{payId}`. **`PUT /employeeStatus/{id}/rehire` is in neither guide: confirm it is covered by Post Updates** (rehire stays implemented) |
+| Get Employees from CLEARVIEW | USD 5 | `GET /employee/externalId/…`, `GET /employee/employeeNumber/…`, `GET /employee/{id}`, `GET /organization/employees` (xref seeding and ID resolution), `GET /employeeJob/{id}` (current primary job and rate before job / pay changes), `GET /employeeStoreAssignment/{id}` (assignment to end on a transfer), `GET /terminationReason` |
+
+Every read in the third row goes through one seam, `ClearviewReads` in `src/shared/clearview/connector.ts` (`ClearviewApiReads`
+over the API today), so the read product can be dropped later by tracking `jobId` / `assignmentId` in `xref` ourselves and
+replacing that one class; the write calls and the New Hires lookups stay as they are.
 
 **To confirm in UAT before live** (the shadow build makes none of these a blocker):
 1. The import flow: does `externalId` survive Import → Payroll adding the employee, and is our employee number kept as

@@ -10,6 +10,8 @@ import { runConnector, runDiscovery } from "../shared/connectors";
 //   GET|POST    /api/hub/clearview/run                       run now (always allowed, even with the timer off)
 //   POST        /api/hub/clearview/discover?what=codes       stores / jobs / termination reasons from Clearview -> report + ref.destination_codes
 //   POST        /api/hub/clearview/discover?what=employees   seed xref.employees from Clearview's employee list
+// Clearview bills each API connection from its first call, so discover answers 409 and the run never calls Clearview while
+// CLEARVIEW_ENABLED is not true (the run still works, as shadow).
 // Manual routes: scope Employees.Summary.Write + role Summary.Admin, or app role Integration.Run. Audited as a write BEFORE
 // anything runs (fail-closed: 503 and nothing runs when the audit record cannot be written). Responses carry counts and
 // ids only; never employee names, SIN, dates of birth or pay.
@@ -49,6 +51,8 @@ export async function clearviewDiscover(req: HttpRequest, ctx: InvocationContext
   const caller = auth.caller!;
   const what = (req.query.get("what") ?? "codes").toLowerCase();
   if (what !== "codes" && what !== "employees") return { status: 400, jsonBody: { error: "what must be codes or employees" } };
+  if (!config.clearviewEnabled)                                            // billing starts at the first call: a deliberate switch first
+    return { status: 409, headers: NO_STORE, jsonBody: { error: "CLEARVIEW_ENABLED is not true: discovery would make the first billable Clearview call" } };
   ctx.log(`[clearview] discover ${what} by ${describeCaller(caller)}`);
   const audit = { caller, endpoint: "POST /hub/clearview/discover", employeeId: "", action: "write" as const, fields: [what === "codes" ? "destination_codes" : "xref"] };
   try { await writeAudit({ ...audit, outcome: "allowed" }); }

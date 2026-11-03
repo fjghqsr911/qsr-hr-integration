@@ -69,7 +69,21 @@ export const config = {
   get clearviewBaseUrl() { return (process.env.CLEARVIEW_BASE_URL ?? "https://api.clearviewconnect.com").trim().replace(/\/+$/, ""); },
   /** UKG companies sent to Clearview (one Clearview organization and one authorizationKey each). */
   get clearviewCompanies() { return list("CLEARVIEW_COMPANIES", "SWN6T,SWNGK").map(s => s.toUpperCase()); },
-  /** authorizationKey for one company (CLEARVIEW_AUTH_KEY_<COMPANY>); null when unset or still an unresolved Key Vault reference. */
+  /** oauth (default): self-service API connection, OAuth2 client credentials per organization. key: the partner model (authorizationKey). */
+  get clearviewAuthMode(): "oauth" | "key" { return (process.env.CLEARVIEW_AUTH_MODE ?? "").trim().toLowerCase() === "key" ? "key" : "oauth"; },
+  /** OAuth mode: the Access Token URL and Scope from the Clearview Connections page (shared by both organizations). */
+  get clearviewTokenUrl() { return presentValue(process.env.CLEARVIEW_TOKEN_URL); },
+  get clearviewScope() { return presentValue(process.env.CLEARVIEW_SCOPE); },
+  /** OAuth mode: client id and secret per company (CLEARVIEW_CLIENT_ID_<COMPANY>, CLEARVIEW_CLIENT_SECRET_<COMPANY>, Key Vault);
+   *  null when unset or still an unresolved Key Vault reference. */
+  clearviewClientId(company: string): string | null { return presentValue(process.env[`CLEARVIEW_CLIENT_ID_${company.toUpperCase()}`]); },
+  clearviewClientSecret(company: string): string | null { return presentValue(process.env[`CLEARVIEW_CLIENT_SECRET_${company.toUpperCase()}`]); },
+  /** Optional, set by hand from the Clearview page: when the OAuth secret expires (ISO date). Diagnostics warns 60 days before. */
+  clearviewSecretExpires(company: string): string | null {
+    const v = presentValue(process.env[`CLEARVIEW_SECRET_EXPIRES_${company.toUpperCase()}`]);
+    return v && !Number.isNaN(Date.parse(v)) ? v : null;
+  },
+  /** Key mode: authorizationKey for one company (CLEARVIEW_AUTH_KEY_<COMPANY>); null when unset or still an unresolved Key Vault reference. */
   clearviewAuthKey(company: string): string | null { return presentValue(process.env[`CLEARVIEW_AUTH_KEY_${company.toUpperCase()}`]); },
   /** Timer and after-sync runs. Off unless explicitly "true"; manual runs are always allowed. */
   get clearviewEnabled() { return (process.env.CLEARVIEW_ENABLED ?? "").toLowerCase() === "true"; },

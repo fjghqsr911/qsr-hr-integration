@@ -9,6 +9,33 @@ import { MapperConfig, DEFAULT_MAPPER_CONFIG, plan as planFor, redactForHash, re
   Log lines carry ids and Clearview messages only.
 */
 
+/*
+  Every read about an EXISTING employee goes through ClearviewReads (the "Get Employees from CLEARVIEW" product, billed
+  separately): if that product is dropped, this seam is replaced by xref-tracked ids and the write calls stay as they are.
+  Lookups that belong to the "Post New Hires" product (organization/stores, job, filecontrol, import status) stay direct.
+*/
+export interface ClearviewReads {
+  employeeByExternalId(company: string, externalId: string): Promise<any | null>;
+  employeeByNumber(company: string, employeeNumber: string): Promise<any | null>;
+  employee(company: string, employeeId: number): Promise<any>;
+  jobs(company: string, employeeId: number, includeInactive: boolean): Promise<any[]>;
+  storeAssignments(company: string, employeeId: number, includeInactive: boolean): Promise<any[]>;
+  organizationEmployees(company: string, includeInactive: boolean): Promise<any>;
+  terminationReasons(company: string): Promise<any[]>;
+}
+
+/** ClearviewReads over the API (the Get Employees product). */
+export class ClearviewApiReads implements ClearviewReads {
+  constructor(private client: ClearviewClient) {}
+  employeeByExternalId(company: string, externalId: string) { return this.client.getOrNull(company, `/employee/externalId/${encodeURIComponent(externalId)}`); }
+  employeeByNumber(company: string, employeeNumber: string) { return this.client.getOrNull(company, `/employee/employeeNumber/${encodeURIComponent(employeeNumber)}`); }
+  employee(company: string, employeeId: number) { return this.client.get(company, `/employee/${employeeId}`); }
+  async jobs(company: string, employeeId: number, includeInactive: boolean) { return (await this.client.get(company, `/employeeJob/${employeeId}`, { includeInactiveJobs: includeInactive })) ?? []; }
+  async storeAssignments(company: string, employeeId: number, includeInactive: boolean) { return (await this.client.get(company, `/employeeStoreAssignment/${employeeId}`, { includeInactiveStoreAssignment: includeInactive })) ?? []; }
+  organizationEmployees(company: string, includeInactive: boolean) { return this.client.get(company, "/organization/employees", { includeInactiveEmployee: includeInactive }); }
+  async terminationReasons(company: string) { return (await this.client.get(company, "/terminationReason")) ?? []; }
+}
+
 const isActive = (status: unknown) => /^a/i.test(String(status ?? ""));
 const sameName = (a: unknown, b: unknown) => String(a ?? "").trim().toUpperCase() === String(b ?? "").trim().toUpperCase();
 const stdOf = (detail: any) => detail?.standardInformation ?? detail ?? {};
@@ -27,7 +54,10 @@ export function classify(e: any): DeliveryError {
 export class ClearviewConnector implements Connector {
   readonly destination = "clearview";
   private reportingStoreWarned = false;
-  constructor(private client: ClearviewClient, private cfg: MapperConfig = DEFAULT_MAPPER_CONFIG, private log: (m: string) => void = () => {}) {}
+  private reads: ClearviewReads;
+  constructor(private client: ClearviewClient, private cfg: MapperConfig = DEFAULT_MAPPER_CONFIG, private log: (m: string) => void = () => {}, reads?: ClearviewReads) {
+    this.reads = reads ?? new ClearviewApiReads(client);
+  }
 
   hasCredentials(companyId: string | null): boolean { return this.client.hasKey(companyId); }
   sensitiveNeeds(ctx: DeliveryContext): SensitiveNeed[] { return sensitiveNeeds(ctx); }
@@ -58,11 +88,11 @@ export class ClearviewConnector implements Connector {
       if (Number.isInteger(id) && id > 0) return { id };
     }
     const emp = ctx.employment!;
-    const byExternal = await this.client.getOrNull(company, `/employee/externalId/${encodeURIComponent(emp.employeeId)}`);
+    const byExternal = await this.reads.employeeByExternalId(company, emp.employeeId);
     const id1 = idOf(byExternal);
     if (id1) return { id: id1, xref: { externalId: String(id1), source: "matched" } };
     if (emp.employeeNumber) {
-      const byNumber = await this.client.getOrNull(company, `/employee/employeeNumber/${encodeURIComponent(emp.employeeNumber)}`);
+      const byNumber = await this.reads.employeeByNumber(company, emp.employeeNumber);
       const id2 = idOf(byNumber);
       if (id2 && sameName(stdOf(byNumber).lastName, emp.lastName)) return { id: id2, xref: { externalId: String(id2), source: "matched" } };
       if (id2) this.log(`employee ${emp.employeeId}: Clearview employeeNumber match has a different last name; not linked`);
@@ -72,7 +102,7 @@ export class ClearviewConnector implements Connector {
 
   private async import(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const emp = ctx.employment!;
-    const existing = await this.client.getOrNull(company, `/employee/externalId/${encodeURIComponent(emp.employeeId)}`);
+    const existing = await this.reads.employeeByExternalId(company, emp.employeeId);
     const id = idOf(existing);
     if (id) return { responseRef: `employee:${id}`, warning: "already in Clearview: xref recorded, nothing imported", xref: { externalId: String(id), source: "matched" } };
     const number = emp.employeeNumber!;
@@ -85,7 +115,7 @@ export class ClearviewConnector implements Connector {
 
   private async rehire(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const { id, xref } = await this.resolveEmployee(company, ctx);
-    const detail = await this.client.get(company, `/employee/${id}`);
+    const detail = await this.reads.employee(company, id);
     const payload: any = plan.payload;
     if (isActive(stdOf(detail).status)) return { responseRef: `employee:${id}`, warning: "already active in Clearview; rehire not sent", xref };
     const termDate = detail?.terminationInformation?.terminationDate ?? null;
@@ -97,7 +127,7 @@ export class ClearviewConnector implements Connector {
 
   private async terminate(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const { id, xref } = await this.resolveEmployee(company, ctx);
-    const detail = await this.client.get(company, `/employee/${id}`);
+    const detail = await this.reads.employee(company, id);
     const payload: any = plan.payload;
     if (!isActive(stdOf(detail).status)) {
       const termDate = String(detail?.terminationInformation?.terminationDate ?? "").slice(0, 10);
@@ -112,7 +142,7 @@ export class ClearviewConnector implements Connector {
   private async store(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const { id, xref } = await this.resolveEmployee(company, ctx);
     const payload: any = plan.payload;
-    const list: any[] = (await this.client.get(company, `/employeeStoreAssignment/${id}`, { includeInactiveStoreAssignment: false })) ?? [];
+    const list: any[] = await this.reads.storeAssignments(company, id, false);
     const open = (a: any) => !a?.endDate;
     const warnings: string[] = [];
     let responseRef: string | null = null;
@@ -143,7 +173,7 @@ export class ClearviewConnector implements Connector {
   private async job(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const { id, xref } = await this.resolveEmployee(company, ctx);
     const payload: any = plan.payload;
-    const jobs: any[] = (await this.client.get(company, `/employeeJob/${id}`, { includeInactiveJobs: true })) ?? [];
+    const jobs: any[] = await this.reads.jobs(company, id, true);
     const primary = jobs.find(j => j.primary && isActive(j.jobStatus)) ?? jobs.find(j => j.primary) ?? null;
     const target = jobs.find(j => Number(j.jobCode) === Number(payload.add.jobCode) || (payload.promote.jobId && Number(j.jobId) === Number(payload.promote.jobId))) ?? null;
     if (target && primary && Number(target.jobId) === Number(primary.jobId) && isActive(target.jobStatus))
@@ -167,7 +197,7 @@ export class ClearviewConnector implements Connector {
   private async pay(company: string, plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult> {
     const { id, xref } = await this.resolveEmployee(company, ctx);
     const payload: any = plan.payload;
-    const jobs: any[] = (await this.client.get(company, `/employeeJob/${id}`, { includeInactiveJobs: false })) ?? [];
+    const jobs: any[] = await this.reads.jobs(company, id, false);
     const primary = jobs.find(j => j.primary) ?? null;
     if (!primary) throw new DeliveryError("dead", "no primary job in Clearview to attach the pay change to");
     const existing = (primary.payRates ?? []).find((p: any) => String(p.effectiveDate ?? "").slice(0, 10) === payload.effectiveDate) ?? null;
@@ -190,11 +220,11 @@ export class ClearviewConnector implements Connector {
   async resolveCreated(p: PendingCreate): Promise<{ externalId: string; source: "created" | "matched" } | null> {
     const company = p.companyId ?? "";
     try {
-      const byExternal = await this.client.getOrNull(company, `/employee/externalId/${encodeURIComponent(p.employeeId)}`);
+      const byExternal = await this.reads.employeeByExternalId(company, p.employeeId);
       const id1 = idOf(byExternal);
       if (id1) return { externalId: String(id1), source: "created" };
       if (p.employeeNumber) {
-        const byNumber = await this.client.getOrNull(company, `/employee/employeeNumber/${encodeURIComponent(p.employeeNumber)}`);
+        const byNumber = await this.reads.employeeByNumber(company, p.employeeNumber);
         const id2 = idOf(byNumber);
         if (id2 && sameName(stdOf(byNumber).lastName, p.lastName)) return { externalId: String(id2), source: "created" };
       }

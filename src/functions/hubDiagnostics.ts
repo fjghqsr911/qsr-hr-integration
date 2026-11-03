@@ -119,15 +119,29 @@ function checkCaller(caller: Caller): Component {
   return { status: clientAllowed ? "pass" : "fail", kind: caller.kind, clientAppId: caller.clientAppId, clientAllowed };
 }
 
+export const SECRET_WARN_DAYS = 60;
+
 /** The Clearview destination: settings, credentials per company, a timed GET /organization/stores (skipped without
- *  credentials), queue counts and the mapping table counts. Never calls Clearview with a write. */
-export async function checkClearview(): Promise<Component & { name: "clearview" }> {
+ *  credentials, and skipped while CLEARVIEW_ENABLED is off because the first call starts billing), secret expiry,
+ *  queue counts and the mapping table counts. Never calls Clearview with a write. */
+export async function checkClearview(now: Date = new Date()): Promise<Component & { name: "clearview" }> {
   const enabled = config.clearviewEnabled, live = config.clearviewLiveEnabled;
   const creds = clearviewCredentials();
   const notes: string[] = [];
+  let secretWarn = false;
 
-  let api: Component | { status: "skipped" } = { status: "skipped" };
-  if (creds.status !== "missing") {
+  // OAuth secrets expire after 24 months: warn 60 days ahead (dates are set by hand from the Clearview page)
+  const expiries = Object.entries(creds.secretExpires).filter(([, v]) => v).map(([c, v]) => ({ company: c, at: new Date(v!) })).sort((a, b) => a.at.getTime() - b.at.getTime());
+  const secretExpiresUtc = expiries.length ? expiries[0].at.toISOString() : null;
+  for (const e of expiries) {
+    const days = Math.floor((e.at.getTime() - now.getTime()) / 86_400_000);
+    if (days < 0) { notes.push(`OAuth secret for ${e.company} expired ${-days} day(s) ago: create a new secret in Clearview Connections`); secretWarn = true; }
+    else if (days <= SECRET_WARN_DAYS) { notes.push(`OAuth secret for ${e.company} expires in ${days} day(s): create a new secret in Clearview Connections`); secretWarn = true; }
+  }
+
+  let api: Component | { status: "skipped"; detail?: string } = { status: "skipped" };
+  if (!enabled) { api = { status: "skipped", detail: "connector disabled; first call starts billing" }; }
+  else if (creds.status !== "missing") {
     const client = buildClearviewClient();
     const started = Date.now();
     const failures: string[] = [];
@@ -136,9 +150,11 @@ export async function checkClearview(): Promise<Component & { name: "clearview" 
       catch (e: any) { failures.push(`${company}: ${errText(e)}`); }
     }
     api = failures.length ? { status: "fail", ms: Date.now() - started, detail: failures.join("; ").slice(0, 300) } : { status: "pass", ms: Date.now() - started };
-  } else notes.push("no CLEARVIEW_AUTH_KEY_<COMPANY> set: Clearview not called, live stores run as shadow");
+  }
+  if (creds.status === "missing") notes.push(creds.mode === "oauth" ? "no Clearview OAuth settings (CLEARVIEW_TOKEN_URL, CLEARVIEW_CLIENT_ID_<COMPANY>, CLEARVIEW_CLIENT_SECRET_<COMPANY>): Clearview not called, live stores run as shadow"
+                                                                      : "no CLEARVIEW_AUTH_KEY_<COMPANY> set: Clearview not called, live stores run as shadow");
   if (creds.status === "partial") notes.push(`credentials for ${Object.entries(creds.companies).filter(([, ok]) => !ok).map(([c]) => c).join(", ")} missing: those companies run as shadow`);
-  if (!enabled) notes.push("CLEARVIEW_ENABLED is not \"true\": timer and after-sync runs are off");
+  if (!enabled) notes.push("CLEARVIEW_ENABLED is not \"true\": timer, after-sync runs and every Clearview call are off");
 
   let queue: Record<string, number | null> | null = null;
   const codes: Record<string, number> = { store: 0, job: 0, termination: 0 };
@@ -159,9 +175,9 @@ export async function checkClearview(): Promise<Component & { name: "clearview" 
     sqlError = errText(e);
   }
 
-  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (creds.status !== "present" || !enabled || codes.store === 0 || codes.job === 0) ? "warn" : "pass";
+  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (creds.status !== "present" || !enabled || secretWarn || codes.store === 0 || codes.job === 0) ? "warn" : "pass";
   const detail = [sqlError ? `queue unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
-  return { name: "clearview", status, enabled, live, credentials: creds.status, api, queue, codes, ...(detail ? { detail } : {}) };
+  return { name: "clearview", status, enabled, live, authMode: creds.mode, credentials: creds.status, secretExpiresUtc, api, queue, codes, ...(detail ? { detail } : {}) };
 }
 
 // ---------------------------------------------------------------- endpoint ----------------------------------------------------------------

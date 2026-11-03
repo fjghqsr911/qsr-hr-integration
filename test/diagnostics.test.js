@@ -17,7 +17,9 @@ module.exports = async () => {
     writeAudit: async () => { auditWrites++; },
     probeAudit: async () => { if (auditFails) throw auditFails; return 7; }
   });
-  let creds = { status: "missing", companies: { SWN6T: false, SWNGK: false } };
+  const noCreds = () => ({ mode: "oauth", status: "missing", companies: { SWN6T: false, SWNGK: false }, secretExpires: { SWN6T: null, SWNGK: null } });
+  const allCreds = (over = {}) => ({ mode: "oauth", status: "present", companies: { SWN6T: true, SWNGK: true }, secretExpires: { SWN6T: null, SWNGK: null }, ...over });
+  let creds = noCreds();
   let clearviewFails = null;        // null = GET /organization/stores ok; otherwise the error to throw
   const clearviewCalls = [];
   stubModule("shared/connectors.js", {
@@ -54,7 +56,7 @@ module.exports = async () => {
     for (const k of SETTINGS) process.env[k] = `test-${k.toLowerCase()}`;
     process.env.HUB_SYNC_ENABLED = "true"; delete process.env.ALLOWED_CLIENT_IDS;
     process.env.CLEARVIEW_ENABLED = "true"; process.env.CLEARVIEW_LIVE_ENABLED = "false";
-    creds = { status: "missing", companies: { SWN6T: false, SWNGK: false } }; clearviewFails = null; clearviewCalls.length = 0;
+    creds = noCreds(); clearviewFails = null; clearviewCalls.length = 0;
     pool = fakePool(allGranted); ukgFails = null; auditFails = null; auditWrites = 0; resets = 0; logs.length = 0;
   };
   const restore = () => { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } };
@@ -172,37 +174,52 @@ module.exports = async () => {
       reset();
       const b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
       const d = b.destinations[0];
-      eq(Object.keys(d).sort(), ["api", "codes", "credentials", "detail", "enabled", "live", "name", "queue", "status"]);
-      eq([d.name, d.status, d.enabled, d.live, d.credentials], ["clearview", "warn", true, false, "missing"]);
+      eq(Object.keys(d).sort(), ["api", "authMode", "codes", "credentials", "detail", "enabled", "live", "name", "queue", "secretExpiresUtc", "status"]);
+      eq([d.name, d.status, d.enabled, d.live, d.authMode, d.credentials, d.secretExpiresUtc], ["clearview", "warn", true, false, "oauth", "missing", null]);
       eq(d.api, { status: "skipped" });
       eq(d.queue, { pending: 3, waiting: 1, failed: 0, dead: 2, oldestPendingMinutes: 95 });
       eq(d.codes, { store: 2, job: 4, termination: 1 });
-      assert(/no CLEARVIEW_AUTH_KEY_<COMPANY> set/.test(d.detail), d.detail);
+      assert(/no Clearview OAuth settings \(CLEARVIEW_TOKEN_URL/.test(d.detail), d.detail);
+      reset(); creds = { ...noCreds(), mode: "key" };
+      assert(/no CLEARVIEW_AUTH_KEY_<COMPANY> set/.test((await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0].detail));
       eq(clearviewCalls, [], "Clearview is never called without a key");
       assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
     });
 
     await test("diagnostics: clearview with credentials -> timed GET /organization/stores per company; partial keys warn; API failure -> fail; sql down -> fail with queue null", async () => {
-      reset(); creds = { status: "present", companies: { SWN6T: true, SWNGK: true } };
+      reset(); creds = allCreds();
       let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq([d.status, d.credentials, d.api.status], ["pass", "present", "pass"]); assert(typeof d.api.ms === "number"); assert(!("detail" in d), d.detail);
       eq(clearviewCalls, ["SWN6T GET /organization/stores", "SWNGK GET /organization/stores"]);
-      reset(); creds = { status: "partial", companies: { SWN6T: true, SWNGK: false } };
+      reset(); creds = allCreds({ status: "partial", companies: { SWN6T: true, SWNGK: false } });
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq([d.status, d.credentials, d.api.status], ["warn", "partial", "pass"]); assert(/credentials for SWNGK missing/.test(d.detail), d.detail);
       eq(clearviewCalls, ["SWN6T GET /organization/stores"]);
-      reset(); creds = { status: "present", companies: { SWN6T: true, SWNGK: true } }; clearviewFails = new Error("Clearview 401 on GET /organization/stores: Unauthorized");
+      reset(); creds = allCreds(); clearviewFails = new Error("Clearview 401 on GET /organization/stores: Unauthorized");
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq([d.status, d.api.status], ["fail", "fail"]); assert(/SWN6T: Clearview 401/.test(d.api.detail), d.api.detail);
-      reset(); creds = { status: "present", companies: { SWN6T: true, SWNGK: true } }; process.env.CLEARVIEW_ENABLED = "false";
+      reset(); creds = allCreds(); process.env.CLEARVIEW_ENABLED = "false";
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq([d.status, d.enabled], ["warn", false]); assert(/CLEARVIEW_ENABLED is not "true"/.test(d.detail), d.detail);
+      eq(d.api, { status: "skipped", detail: "connector disabled; first call starts billing" }); eq(clearviewCalls, [], "disabled: Clearview is never called, even with credentials");
       reset(); pool = fakePool(() => { throw new Error("db down"); });
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq([d.status, d.queue], ["fail", null]); assert(/queue unavailable: db down/.test(d.detail), d.detail);
       reset(); pool = fakePool((text) => /HAS_PERMS_BY_NAME/.test(text) ? granted() : { recordset: [] });
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
       eq(d.codes, { store: 0, job: 0, termination: 0 }); assert(/no store mappings yet/.test(d.detail) && /no job mappings yet/.test(d.detail), d.detail);
+    });
+    await test("diagnostics: clearview OAuth secret expiry -> secretExpiresUtc (earliest) and warn within 60 days or past", async () => {
+      const soon = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), far = new Date(Date.now() + 400 * 86400000).toISOString().slice(0, 10);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: far, SWNGK: soon } });
+      let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "warn"); eq(d.secretExpiresUtc, new Date(soon).toISOString()); assert(/OAuth secret for SWNGK expires in (29|30) day\(s\)/.test(d.detail), d.detail);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: "2026-01-01", SWNGK: null } });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "warn"); assert(/OAuth secret for SWN6T expired \d+ day\(s\) ago/.test(d.detail), d.detail);
+      reset(); creds = allCreds({ secretExpires: { SWN6T: far, SWNGK: far } });
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[0];
+      eq(d.status, "pass"); eq(d.secretExpiresUtc, new Date(far).toISOString());
     });
   } finally { restore(); }
 

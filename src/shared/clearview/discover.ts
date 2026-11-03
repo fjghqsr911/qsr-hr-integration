@@ -1,5 +1,6 @@
 import { CodeMaps, CodeType } from "../delivery";
 import { ClearviewClient } from "./client";
+import { ClearviewApiReads, ClearviewReads } from "./connector";
 
 /*
   Mapping discovery, per Clearview organization key (= per UKG company):
@@ -42,8 +43,9 @@ export const tdlDigits = (tdl: string | null | undefined) => { const d = String(
 
 const normNumber = (n: unknown) => String(n ?? "").trim().replace(/^0+/, "");
 
-export async function discover(client: ClearviewClient, store: DiscoveryStore, opts: { companies: string[]; what?: "codes" | "employees"; log?: (m: string) => void }): Promise<DiscoverReport> {
+export async function discover(client: ClearviewClient, store: DiscoveryStore, opts: { companies: string[]; what?: "codes" | "employees"; log?: (m: string) => void; reads?: ClearviewReads }): Promise<DiscoverReport> {
   const log = opts.log ?? (() => {});
+  const reads = opts.reads ?? new ClearviewApiReads(client);          // Get Employees product: employee list, termination reasons
   const what: "codes" | "employees" = opts.what === "employees" ? "employees" : "codes";
   const hubStores = await store.hubStores();
   const byDigits = new Map(hubStores.map(s => [hubDigits(s), s]));
@@ -78,7 +80,7 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
           org.jobs.push({ jobId: Number(j.jobId), jobCode: j.jobCode === null || j.jobCode === undefined ? null : Number(j.jobCode), name: String(j.jobName ?? j.name ?? ""), abbreviation: j.jobAbbreviation ?? null, status: j.jobStatus ?? null });
           knownJobIds.add(String(j.jobId)); if (j.jobCode !== null && j.jobCode !== undefined) knownJobCodes.add(String(j.jobCode));
         }
-        const reasons: any[] = (await client.get(company, "/terminationReason")) ?? [];
+        const reasons: any[] = await reads.terminationReasons(company);
         for (const t of reasons) { org.terminationReasons.push({ terminationReasonId: Number(t.terminationReasonId), name: String(t.name ?? ""), code: t.code ?? null }); knownReasonIds.add(String(t.terminationReasonId)); }
         const attrs: any[] = (await client.get(company, "/organization/filecontrol", { requiredAttributesOnly: true, includedAttributesOnly: false })) ?? [];
         org.mandatoryAttributes = attrs.filter(a => a?.isRequired !== false).map(a => String(a.attributeName ?? a.attributeId ?? "")).filter(Boolean);
@@ -120,7 +122,7 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
   for (const org of report.organizations) {
     if (org.error) continue;
     try {
-      const o = await client.get(org.company, "/organization/employees", { includeInactiveEmployee: true });
+      const o = await reads.organizationEmployees(org.company, true);
       org.organizationId = Number(o?.organizationId) || null; org.name = o?.name ?? null;
       for (const e of (o?.employees ?? []) as any[]) {
         clearviewCount++;

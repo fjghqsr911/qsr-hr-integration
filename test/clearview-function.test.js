@@ -11,6 +11,8 @@ module.exports = async () => {
   const discoveries = [];
   let syncResult = { status: "succeeded", employeesInScope: 1 };
   const realSql = require(path.join(DIST, "shared", "sql.js")).sql;
+  // the real credential helpers, grabbed before connectors.js is stubbed for the endpoint tests
+  const { companyCredential, clearviewCredentials, buildClearviewClient } = require(path.join(DIST, "shared", "connectors.js"));
   stubModule("shared/sql.js", { getSharedHubPool: async () => fakePool(), resetSharedHubPool() {}, openHubPool: async () => fakePool(), sql: realSql });
   stubModule("shared/audit.js", { writeAudit: async (e) => { if (auditFails) throw new Error("down"); audits.push(e); }, probeAudit: async () => 1 });
   stubModule("shared/connectors.js", {
@@ -34,6 +36,14 @@ module.exports = async () => {
   const logs = [];
   const ctx = { log(...a) { logs.push(a.join(" ")); }, error(...a) { logs.push("ERROR " + a.join(" ")); }, warn(...a) { logs.push("WARN " + a.join(" ")); } };
   const reset = () => { audits.length = 0; auditFails = false; connectorRuns.length = 0; discoveries.length = 0; logs.length = 0; delete process.env.CLEARVIEW_ENABLED; };
+  const CLEARVIEW_KEYS = ["CLEARVIEW_BASE_URL", "CLEARVIEW_COMPANIES", "CLEARVIEW_AUTH_MODE", "CLEARVIEW_TOKEN_URL", "CLEARVIEW_SCOPE", "CLEARVIEW_CLIENT_ID_SWN6T", "CLEARVIEW_CLIENT_SECRET_SWN6T",
+    "CLEARVIEW_CLIENT_ID_SWNGK", "CLEARVIEW_CLIENT_SECRET_SWNGK", "CLEARVIEW_SECRET_EXPIRES_SWN6T", "CLEARVIEW_SECRET_EXPIRES_SWNGK", "CLEARVIEW_AUTH_KEY_SWN6T", "CLEARVIEW_AUTH_KEY_SWNGK",
+    "CLEARVIEW_ENABLED", "CLEARVIEW_LIVE_ENABLED", "CLEARVIEW_EXCLUDED_JOBS", "CLEARVIEW_MAX_PER_RUN", "CLEARVIEW_WAITING_ALERT_DAYS", "CLEARVIEW_TIMEOUT_MS", "HUB_SHADOW_RETENTION_DAYS", "CLEARVIEW_TERMINATION_REASON_ID"];
+  const withEnv = async (values, fn) => {
+    const saved = {}; for (const k of CLEARVIEW_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+    for (const [k, v] of Object.entries(values)) process.env[k] = v;
+    try { return await fn(); } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+  };
 
   await test("clearview run: permissions (Summary.Admin + write scope, or app role Integration.Run); nothing runs or is audited when denied", async () => {
     reset();
@@ -62,17 +72,27 @@ module.exports = async () => {
     connectorResult = () => ({ status: "succeeded" });
   });
 
-  await test("clearview discover: what=codes (default) | employees, 400 otherwise; audited; POST only route registered", async () => {
+  await test("clearview discover: 409 while CLEARVIEW_ENABLED is not true (the first Clearview call starts billing); nothing audited", async () => {
     reset();
+    const r = await clearviewDiscover(req(admin), ctx);
+    eq(r.status, 409); assert(/CLEARVIEW_ENABLED is not true/.test(r.jsonBody.error), r.jsonBody.error);
+    eq(discoveries, []); eq(audits, []);
+    process.env.CLEARVIEW_ENABLED = "false";
+    eq((await clearviewDiscover(req(admin), ctx)).status, 409);
+    eq((await clearviewDiscover(req(reader), ctx)).status, 403, "permissions still checked first");
+  });
+
+  await test("clearview discover: what=codes (default) | employees, 400 otherwise; audited; POST only route registered", async () => {
+    reset(); process.env.CLEARVIEW_ENABLED = "true";
     const r = await clearviewDiscover(req(admin), ctx);
     eq(r.status, 200); eq(r.jsonBody.what, "codes"); eq(discoveries, ["codes"]);
     eq([audits[0].endpoint, audits[0].fields], ["POST /hub/clearview/discover", ["destination_codes"]]);
-    reset();
+    reset(); process.env.CLEARVIEW_ENABLED = "true";
     eq((await clearviewDiscover(req(admin, "what=Employees"), ctx)).jsonBody.what, "employees"); eq(audits[0].fields, ["xref"]);
-    reset();
+    reset(); process.env.CLEARVIEW_ENABLED = "true";
     eq((await clearviewDiscover(req(admin, "what=stores"), ctx)).status, 400); eq(discoveries, []); eq(audits, []);
     eq((await clearviewDiscover(req(reader), ctx)).status, 403);
-    reset(); auditFails = true;
+    reset(); process.env.CLEARVIEW_ENABLED = "true"; auditFails = true;
     eq((await clearviewDiscover(req(admin), ctx)).status, 503); eq(discoveries, []);
   });
 
@@ -92,6 +112,36 @@ module.exports = async () => {
     eq((await runSyncThenDeliver(ctx, "manual")).status, "succeeded");
     assert(logs.some(l => l === "ERROR [clearview] after-sync run error: boom"), logs.join("\n"));
     connectorResult = () => ({ status: "succeeded" });
+  });
+
+  await test("credentials: oauth mode needs token url + client id + secret per company; key mode needs the key; unresolved Key Vault = missing; secret expiry parsed", async () => {
+    await withEnv({}, () => {
+      eq(config.clearviewAuthMode, "oauth"); eq(companyCredential("SWN6T"), null);
+      eq(clearviewCredentials(), { mode: "oauth", status: "missing", companies: { SWN6T: false, SWNGK: false }, secretExpires: { SWN6T: null, SWNGK: null } });
+    });
+    await withEnv({ CLEARVIEW_TOKEN_URL: "https://login.example.test/token", CLEARVIEW_SCOPE: "api://cv/.default", CLEARVIEW_CLIENT_ID_SWN6T: "cid", CLEARVIEW_CLIENT_SECRET_SWN6T: " sec ", CLEARVIEW_SECRET_EXPIRES_SWN6T: "2028-11-01", CLEARVIEW_SECRET_EXPIRES_SWNGK: "soon" }, () => {
+      eq(companyCredential("swn6t"), { mode: "oauth", tokenUrl: "https://login.example.test/token", scope: "api://cv/.default", clientId: "cid", clientSecret: "sec" });
+      eq(companyCredential("SWNGK"), null);
+      const c = clearviewCredentials();
+      eq([c.mode, c.status, c.companies, c.secretExpires], ["oauth", "partial", { SWN6T: true, SWNGK: false }, { SWN6T: "2028-11-01", SWNGK: null }]);
+    });
+    await withEnv({ CLEARVIEW_TOKEN_URL: "https://login.example.test/token", CLEARVIEW_CLIENT_ID_SWN6T: "cid", CLEARVIEW_CLIENT_SECRET_SWN6T: `${KEY_VAULT_PREFIX}SecretUri=https://kv.vault.azure.net/secrets/cv/1)` }, () => {
+      eq(companyCredential("SWN6T"), null, "unresolved Key Vault secret = missing");
+    });
+    await withEnv({ CLEARVIEW_TOKEN_URL: "https://login.example.test/token", CLEARVIEW_CLIENT_ID_SWN6T: "cid", CLEARVIEW_CLIENT_SECRET_SWN6T: "sec" }, () => {
+      eq(companyCredential("SWN6T").scope, null, "scope optional");
+    });
+    await withEnv({ CLEARVIEW_AUTH_MODE: "key", CLEARVIEW_AUTH_KEY_SWN6T: "k1", CLEARVIEW_CLIENT_ID_SWNGK: "cid", CLEARVIEW_CLIENT_SECRET_SWNGK: "sec", CLEARVIEW_TOKEN_URL: "x" }, () => {
+      eq(config.clearviewAuthMode, "key"); eq(companyCredential("SWN6T"), { mode: "key", key: "k1" }); eq(companyCredential("SWNGK"), null, "oauth settings do not count in key mode");
+      eq(clearviewCredentials().status, "partial");
+    });
+  });
+
+  await test("billing guard: the client only carries credentials when CLEARVIEW_ENABLED is true", async () => {
+    const env = { CLEARVIEW_TOKEN_URL: "https://login.example.test/token", CLEARVIEW_CLIENT_ID_SWN6T: "cid", CLEARVIEW_CLIENT_SECRET_SWN6T: "sec", CLEARVIEW_CLIENT_ID_SWNGK: "cid2", CLEARVIEW_CLIENT_SECRET_SWNGK: "sec2" };
+    await withEnv(env, () => { const c = buildClearviewClient(); eq(c.companies(), []); eq(c.hasKey("SWN6T"), false); });
+    await withEnv({ ...env, CLEARVIEW_ENABLED: "true" }, () => eq(buildClearviewClient().companies(), ["SWN6T", "SWNGK"]));
+    await withEnv({ ...env, CLEARVIEW_ENABLED: "true", CLEARVIEW_CLIENT_SECRET_SWNGK: "" }, () => eq(buildClearviewClient().companies(), ["SWN6T"]));
   });
 
   await test("config: Clearview settings defaults; per-company key; an unresolved Key Vault reference counts as missing", () => {

@@ -6,8 +6,8 @@ const KEY = "11111111-2222-3333-4444-555555555555";
 const SIN = "123456789";
 
 module.exports = async () => {
-  const { ClearviewClient, ClearviewError, safeMessage } = require(path.join(DIST, "shared", "clearview", "client.js"));
-  const { ClearviewConnector, classify, currentRate } = require(path.join(DIST, "shared", "clearview", "connector.js"));
+  const { ClearviewClient, ClearviewError, safeMessage, _resetFirstCallLog } = require(path.join(DIST, "shared", "clearview", "client.js"));
+  const { ClearviewConnector, ClearviewApiReads, classify, currentRate } = require(path.join(DIST, "shared", "clearview", "connector.js"));
   const { discover, tdlDigits, hubDigits } = require(path.join(DIST, "shared", "clearview", "discover.js"));
   const { DeliveryError } = require(path.join(DIST, "shared", "delivery.js"));
 
@@ -27,9 +27,31 @@ module.exports = async () => {
     fn.calls = calls;
     return fn;
   }
-  const client = (fetchImpl, keys = { SWN6T: KEY }) => new ClearviewClient({ baseUrl: "https://api.example.test/", keys: new Map(Object.entries(keys)), timeoutMs: 20000, fetchImpl, sleep: async () => {} });
+  const keyCreds = (keys) => new Map(Object.entries(keys).map(([c, key]) => [c, { mode: "key", key }]));
+  const client = (fetchImpl, keys = { SWN6T: KEY }, extra = {}) => new ClearviewClient({ baseUrl: "https://api.example.test/", credentials: keyCreds(keys), timeoutMs: 20000, fetchImpl, sleep: async () => {}, ...extra });
+  const TOKEN_URL = "https://login.example.test/oauth2/token";
+  const oauthCreds = (companies = ["SWN6T"]) => new Map(companies.map(c => [c, { mode: "oauth", tokenUrl: TOKEN_URL, scope: "api://clearview/.default", clientId: `cid-${c}`, clientSecret: `secret-${c}` }]));
+  const oauthClient = (fetchImpl, extra = {}) => new ClearviewClient({ baseUrl: "https://api.example.test", credentials: oauthCreds(), timeoutMs: 20000, fetchImpl, sleep: async () => {}, ...extra });
+  /** fetch stub for OAuth: token endpoint answers from `token`, API calls from `answers` (as fakeFetch). */
+  function oauthFetch(answers, token = () => [200, { access_token: "tok-1", expires_in: 3600, token_type: "Bearer" }]) {
+    const api = fakeFetch(answers);
+    const tokenCalls = [];
+    const fn = async (url, init) => {
+      if (url === TOKEN_URL) {
+        tokenCalls.push({ body: Object.fromEntries(new URLSearchParams(init.body)), headers: init.headers });
+        const [status, body] = token(tokenCalls.length);
+        return { ok: status < 300, status, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) };
+      }
+      api.calls[api.calls.length] = undefined; api.calls.pop();
+      const r = await api(url, init);
+      api.calls[api.calls.length - 1].auth = init.headers.Authorization ?? null;
+      return r;
+    };
+    fn.calls = api.calls; fn.tokenCalls = tokenCalls;
+    return fn;
+  }
 
-  await test("client: authorizationKey only as a query parameter, per company; no key -> error without network; key never in messages", async () => {
+  await test("client: key mode - authorizationKey only as a query parameter, per company; no credentials -> error without network; key never in messages", async () => {
     const f = fakeFetch({ "GET /api/v2/organization/stores": [200, { organizationId: 18, stores: [] }] });
     const c = client(f, { SWN6T: KEY, SWNGK: "99999999-0000-0000-0000-000000000000" });
     eq((await c.get("swn6t", "/organization/stores", { includeInactiveStores: false })).organizationId, 18);
@@ -37,7 +59,7 @@ module.exports = async () => {
     assert(f.calls[0].path === "/api/v2/organization/stores");
     eq(c.hasKey("SWNGK"), true); eq(c.hasKey("M9WOJ"), false); eq(c.hasKey(null), false); eq(c.companies(), ["SWN6T", "SWNGK"]);
     let err = null; try { await c.get("M9WOJ", "/organization/stores"); } catch (e) { err = e; }
-    assert(err instanceof ClearviewError && err.status === 0 && /no authorizationKey for company M9WOJ/.test(err.message)); eq(f.calls.length, 1);
+    assert(err instanceof ClearviewError && err.status === 0 && /no credentials for company M9WOJ/.test(err.message)); eq(f.calls.length, 1);
     const g = fakeFetch({ "GET /api/v2/employee/5": [401, "Unauthorized"] });
     err = null; try { await client(g).get("SWN6T", "/employee/5"); } catch (e) { err = e; }
     eq(err.status, 401); assert(!err.message.includes(KEY) && !err.message.includes("authorizationKey"), err.message);
@@ -60,6 +82,51 @@ module.exports = async () => {
     const p = fakeFetch({ "PATCH /api/v2/employee/5": [200, ""] });
     eq(await client(p).patch("SWN6T", "/employee/5", [{ op: "replace", path: "x", value: 1 }]), null);
     eq(p.calls[0].body, [{ op: "replace", path: "x", value: 1 }]);
+  });
+
+  await test("client: oauth mode - client-credentials token request, bearer header, no authorizationKey, token cached until expiry minus 60 s", async () => {
+    let now = Date.parse("2026-11-02T15:00:00Z");
+    const f = oauthFetch({ "GET /api/v2/organization/stores": [200, { organizationId: 18 }], "GET /api/v2/job": [200, []] });
+    const c = oauthClient(f, { now: () => now });
+    eq((await c.get("SWN6T", "/organization/stores", { includeInactiveStores: false })).organizationId, 18);
+    eq(f.tokenCalls.length, 1);
+    eq(f.tokenCalls[0].body, { grant_type: "client_credentials", client_id: "cid-SWN6T", client_secret: "secret-SWN6T", scope: "api://clearview/.default" });
+    eq(f.tokenCalls[0].headers["Content-Type"], "application/x-www-form-urlencoded");
+    eq(f.calls[0].auth, "Bearer tok-1"); eq(f.calls[0].query, { includeInactiveStores: "false" }, "no authorizationKey in oauth mode");
+    await c.get("SWN6T", "/job"); eq(f.tokenCalls.length, 1, "token reused"); eq(c.tokenRequestCount, 1);
+    now += (3600 - 61) * 1000;                                            // 61 s before expiry: outside the 60 s margin, still cached
+    await c.get("SWN6T", "/job"); eq(f.tokenCalls.length, 1, "still cached 61 s before expiry");
+    now += 2 * 1000;                                                      // 59 s before expiry: inside the margin -> refresh
+    await c.get("SWN6T", "/job"); eq(f.tokenCalls.length, 2, "refreshed 60 s before expiry");
+    let err = null; try { await c.get("SWNGK", "/job"); } catch (e) { err = e; }
+    eq(err.message, "Clearview: no credentials for company SWNGK");
+    const bad = oauthFetch({}, () => [400, { error: "invalid_client", error_description: "AADSTS7000215: Invalid client secret provided" }]);
+    err = null; try { await oauthClient(bad).get("SWN6T", "/job"); } catch (e) { err = e; }
+    eq([err.status, err.message], [400, "Clearview token request 400 for SWN6T: AADSTS7000215: Invalid client secret provided"]);
+    assert(!err.message.includes("secret-SWN6T") && !err.message.includes("cid-"), "secret never in messages");
+    const noToken = oauthFetch({}, () => [200, { token_type: "Bearer" }]);
+    err = null; try { await oauthClient(noToken).get("SWN6T", "/job"); } catch (e) { err = e; }
+    assert(/has no access_token/.test(err.message), err.message);
+  });
+
+  await test("client: oauth 401 -> one token refresh and retry, a second 401 fails; first successful call per organization logged once per process", async () => {
+    _resetFirstCallLog();
+    const logs = [];
+    let f = oauthFetch({ "GET /api/v2/job": (n) => (n === 1 ? [401, "expired"] : [200, [{ jobId: 1 }]]) }, (n) => [200, { access_token: `tok-${n}`, expires_in: 3600 }]);
+    const c = oauthClient(f, { log: m => logs.push(m) });
+    eq((await c.get("SWN6T", "/job")).length, 1);
+    eq(f.tokenCalls.length, 2); eq(f.calls.map(x => x.auth), ["Bearer tok-1", "Bearer tok-2"]);
+    eq(logs, ["[clearview] first call this process org=SWN6T"]);
+    await c.get("SWN6T", "/job"); eq(logs.length, 1, "logged once per process");
+    const other = new ClearviewClient({ baseUrl: "https://api.example.test", credentials: oauthCreds(["SWN6T", "SWNGK"]), timeoutMs: 1000, fetchImpl: f, sleep: async () => {}, log: m => logs.push(m) });
+    await other.get("SWN6T", "/job"); eq(logs.length, 1, "another client instance, same process, same org: no second line");
+    await other.get("SWNGK", "/job"); eq(logs[1], "[clearview] first call this process org=SWNGK");
+    f = oauthFetch({ "GET /api/v2/job": [401, "nope"] });
+    let err = null; try { await oauthClient(f).get("SWN6T", "/job"); } catch (e) { err = e; }
+    eq([err.status, f.tokenCalls.length, f.calls.length], [401, 2, 2]); eq(err.message, "Clearview 401 on GET /job: nope");
+    f = oauthFetch({ "POST /api/v2/employee/import": (n) => (n === 1 ? [401, ""] : [200, ""]) });
+    eq(await oauthClient(f).post("SWN6T", "/employee/import", { a: 1 }), null); eq(f.calls.length, 2, "a write is retried once after a token refresh, never on other errors");
+    _resetFirstCallLog();
   });
 
   await test("client: safeMessage picks Clearview's message, truncates, masks 9+ digit runs, never echoes payload values", () => {
@@ -224,6 +291,32 @@ module.exports = async () => {
     eq(await connector(fakeFetch({})).resolveCreated(pending), null);
     err = null; try { await connector(fakeFetch({ "*": [401, ""] })).resolveCreated(pending); } catch (e) { err = e; }
     eq(err.kind, "abort");
+  });
+
+  await test("connector: every read about an existing employee goes through ClearviewReads (Get Employees product); writes and import lookups stay on the client", async () => {
+    const readCalls = [];
+    const reads = {
+      async employeeByExternalId(co, x) { readCalls.push(`byExternalId ${x}`); return null; },
+      async employeeByNumber(co, n) { readCalls.push(`byNumber ${n}`); return emp("Active"); },
+      async employee(co, id) { readCalls.push(`employee ${id}`); return emp("Active"); },
+      async jobs(co, id, inactive) { readCalls.push(`jobs ${id} ${inactive}`); return [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 17 }] }]; },
+      async storeAssignments(co, id, inactive) { readCalls.push(`assignments ${id} ${inactive}`); return []; },
+      async organizationEmployees() { readCalls.push("organizationEmployees"); return { employees: [] }; },
+      async terminationReasons() { readCalls.push("terminationReasons"); return []; }
+    };
+    const f = fakeFetch({ "POST /api/v2/employeeStatus/55501/terminate": [200, {}], "POST /api/v2/employeeJob/55501/job/9441/pay": [200, { payId: 3 }],
+                          "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 1 }], "POST /api/v2/employee/import": [200, ""] });
+    const c = new ClearviewConnector(client(f), { companies: ["SWN6T"], excludedJobs: [], terminationReasonId: 13078 }, () => {}, reads);
+    await c.execute(planOf("terminate", { terminationDate: "2026-10-18", terminationReasonId: 13078 }), ctxFor({ xref: null }));
+    await c.execute(planOf("pay", { effectiveDate: "2026-11-01", payTypeCode: "H", payRate: 18, salaryHours: null }), ctxFor());
+    await c.execute(planOf("store", { assignment: { storeId: 2283, startDate: "2026-11-03", nameOnRegister: "x" }, endPrevious: null, reportingStoreId: null }), ctxFor());
+    await c.execute(planOf("import", { payAndBenefitInformation: { employeeNumber: "100234" } }), ctxFor({ xref: null }));
+    await c.resolveCreated({ deliveryId: 1, employeeId: "EWLTH200NRY0", companyId: "SWN6T", employeeNumber: "100234", lastName: "Example", finishedUtc: new Date() });
+    eq(readCalls, ["byExternalId EWLTH200NRY0", "byNumber 100234", "employee 55501", "jobs 55501 false", "assignments 55501 false", "byExternalId EWLTH200NRY0", "byExternalId EWLTH200NRY0", "byNumber 100234"]);
+    eq(seq(f), ["POST /employeeStatus/55501/terminate", "POST /employeeJob/55501/job/9441/pay", "POST /employeeStoreAssignment/55501", "GET /employee/import/100234/status", "POST /employee/import"]);
+    assert(!f.calls.some(x => x.method === "GET" && /\/employee\/(?!import\/)|employeeJob\/|employeeStoreAssignment\//.test(x.path)), "no employee read reached the client (import status is a New Hires lookup and stays)");
+    const api = new ClearviewApiReads(client(fakeFetch({ "GET /api/v2/employeeJob/5": [200, [{ jobId: 1 }]], "GET /api/v2/terminationReason": [200, ""] })));
+    eq((await api.jobs("SWN6T", 5, true)).length, 1); eq(await api.terminationReasons("SWN6T"), []); eq(await api.employeeByNumber("SWN6T", "1"), null);
   });
 
   // ---------------------------------------------------------------- discovery ----------------------------------------------------------------
