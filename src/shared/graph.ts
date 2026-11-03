@@ -51,6 +51,11 @@ export interface GraphClientOptions {
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
+/* One credential and one cached token for the whole process (every client built without its own getToken shares it). */
+let sharedCredential: DefaultAzureCredential | null = null;
+let sharedToken: { token: string; expiresAt: number } | null = null;
+export const _resetTokenCache = () => { sharedToken = null; };     // tests only
+
 const nz = (v: any): string | null => (v === null || v === undefined || String(v).trim() === "" ? null : String(v).trim());
 
 /** Path for error messages: relative to the Graph base, no query string (filters, select lists), no host. */
@@ -92,8 +97,6 @@ export class GraphClient {
   private timeoutMs: number;
   private log: (m: string) => void;
   private getTokenImpl: () => Promise<string>;
-  private credential: DefaultAzureCredential | null = null;
-  private cached: { token: string; expiresAt: number } | null = null;
   private calls = 0;
 
   constructor(private opts: GraphClientOptions) {
@@ -108,11 +111,11 @@ export class GraphClient {
   get callCount() { return this.calls; }
 
   private async managedIdentityToken(): Promise<string> {
-    if (this.cached && this.now() < this.cached.expiresAt) return this.cached.token;
-    this.credential ??= new DefaultAzureCredential();
-    const t = await this.credential.getToken(GRAPH_SCOPE);
+    if (sharedToken && this.now() < sharedToken.expiresAt) return sharedToken.token;
+    sharedCredential ??= new DefaultAzureCredential();
+    const t = await sharedCredential.getToken(GRAPH_SCOPE);
     if (!t?.token) throw new GraphError(0, "token_unavailable", "Graph token unavailable");
-    this.cached = { token: t.token, expiresAt: (t.expiresOnTimestamp ?? this.now() + 3600_000) - TOKEN_SAFETY_MS };
+    sharedToken = { token: t.token, expiresAt: (t.expiresOnTimestamp ?? this.now() + 3600_000) - TOKEN_SAFETY_MS };
     return t.token;
   }
 
