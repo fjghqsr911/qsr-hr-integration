@@ -37,9 +37,16 @@ export interface EmploymentContext {
   firstName: string | null; preferredName: string | null; lastName: string | null;
 }
 
-export interface DestinationCode { destinationCode: string; destinationId: string | null; }
+export interface DestinationCode { ukgCode: string; company: string; destinationCode: string; destinationId: string | null; }
 export type CodeType = "store" | "job" | "termination" | "category" | "company";
+/** Per code type: codeKey(company, ukgCode) -> mapping. company '' = shared by every organization (stores, company rows);
+ *  a company-specific row (jobs, termination reasons differ per Clearview organization) wins over the shared one. */
 export type CodeMaps = Record<CodeType, Map<string, DestinationCode>>;
+export const codeKey = (company: string | null | undefined, ukgCode: string) => `${(company ?? "").trim().toUpperCase()}|${ukgCode.trim().toUpperCase()}`;
+export function findCode(codes: CodeMaps, type: CodeType, company: string | null | undefined, ukgCode: string | null | undefined): DestinationCode | undefined {
+  if (!ukgCode) return undefined;
+  return codes[type].get(codeKey(company, ukgCode)) ?? codes[type].get(codeKey("", ukgCode));
+}
 
 export interface DeliveryContext {
   delivery: ClaimedDelivery;

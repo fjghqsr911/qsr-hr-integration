@@ -37,11 +37,24 @@ IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'ck_deliveries_statu
 ALTER TABLE [out].deliveries WITH CHECK ADD CONSTRAINT ck_deliveries_status CHECK (status IN
     ('pending', 'sent', 'unchanged', 'shadow', 'failed', 'dead', 'superseded', 'review', 'resolved', 'waiting', 'skipped'));
 
--- 3. ref.destination_codes: destination_id (Clearview storeId / organization jobId next to the code) and two code types:
+-- 3. ref.destination_codes: destination_id (Clearview storeId / organization jobId next to the code), a company column
+--    (Clearview job codes, job ids and termination reason ids differ per organization: a row with the UKG company applies
+--    to that organization only, a row with company empty is shared, as stores and company rows are), and two code types:
 --    category = UKG full_or_part_time F / P to the Clearview employee category code;
 --    company  = UKG company to the Clearview organizationId.
 IF COL_LENGTH('ref.destination_codes', 'destination_id') IS NULL
     ALTER TABLE ref.destination_codes ADD destination_id nvarchar(50) NULL;
+
+IF COL_LENGTH('ref.destination_codes', 'company') IS NULL
+    ALTER TABLE ref.destination_codes ADD company varchar(10) NOT NULL CONSTRAINT df_destination_codes_company DEFAULT '';
+
+IF NOT EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+               JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+               WHERE i.name = 'pk_destination_codes' AND c.name = 'company')
+BEGIN
+    ALTER TABLE ref.destination_codes DROP CONSTRAINT pk_destination_codes;
+    ALTER TABLE ref.destination_codes ADD CONSTRAINT pk_destination_codes PRIMARY KEY (destination, code_type, company, ukg_code);
+END;
 
 IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'ck_destination_codes_type' AND parent_object_id = OBJECT_ID('ref.destination_codes'))
     ALTER TABLE ref.destination_codes DROP CONSTRAINT ck_destination_codes_type;
@@ -61,5 +74,8 @@ ORDER BY object_name, p.permission_name;
 
 SELECT COL_LENGTH('out.deliveries', 'response_ref') AS response_ref_bytes,
        COL_LENGTH('ref.destination_codes', 'destination_id') AS destination_id_bytes,
+       COL_LENGTH('ref.destination_codes', 'company') AS company_bytes,
+       (SELECT COUNT(*) FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+        WHERE i.name = 'pk_destination_codes') AS pk_columns,
        (SELECT definition FROM sys.check_constraints WHERE name = 'ck_deliveries_status') AS deliveries_status_check,
        (SELECT definition FROM sys.check_constraints WHERE name = 'ck_destination_codes_type') AS destination_codes_type_check;

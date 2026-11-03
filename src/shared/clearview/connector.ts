@@ -153,9 +153,17 @@ export class ClearviewConnector implements Connector {
       responseRef = `assignment:${created?.assignmentId ?? "new"}`;
     }
     if (payload.endPrevious) {
-      for (const a of list.filter(a => open(a) && Number(a.storeId) !== Number(payload.assignment.storeId))) {
+      // end only the open assignment of the store the employee left; other open assignments (shared staff) stay
+      const prev = payload.endPrevious;
+      const matches = (a: any) => open(a) && Number(a.storeId) !== Number(payload.assignment.storeId) &&
+        ((prev.storeId !== null && prev.storeId !== undefined && Number(a.storeId) === Number(prev.storeId)) ||
+         (prev.storeNumber !== null && prev.storeNumber !== undefined && Number(a.storeNumber) === Number(prev.storeNumber)));
+      const previous = prev.storeId === null && prev.storeNumber === null ? [] : list.filter(matches);
+      if (prev.storeId === null && prev.storeNumber === null) warnings.push(`previous store ${prev.fromStore ?? "(none)"} is not mapped; no assignment ended`);
+      else if (previous.length === 0) warnings.push(`no open assignment for previous store ${prev.fromStore ?? "(none)"}; nothing ended`);
+      for (const a of previous) {
         await this.client.put(company, `/employeeStoreAssignment/${id}/assignment/${a.assignmentId}`,
-          { storeId: a.storeId, startDate: String(a.startDate).slice(0, 10), endDate: payload.endPrevious.endDate, nameOnRegister: a.employeeNameOnRegister ?? null, idOnRegister: a.idOnRegister ?? null });
+          { storeId: a.storeId, startDate: String(a.startDate).slice(0, 10), endDate: prev.endDate, nameOnRegister: a.employeeNameOnRegister ?? null, idOnRegister: a.idOnRegister ?? null });
       }
     }
     if (payload.reportingStoreId) {
@@ -183,9 +191,10 @@ export class ClearviewConnector implements Connector {
       await this.client.put(company, `/employeeJob/${id}/job/${target.jobId}`, { primaryJob: true, jobStatus: "A" });
       responseRef = `job:${target.jobId}`;
     } else {
-      const rate = currentRate(primary);
-      if (!(rate > 0)) throw new DeliveryError("dead", "no current primary pay rate in Clearview to carry over to the new job");
-      const added = await this.client.post(company, `/employeeJob/${id}/job`, { ...payload.add, payRate: rate });
+      const pay = currentPay(primary);
+      if (!(pay.payRate > 0)) throw new DeliveryError("dead", "no current primary pay rate in Clearview to carry over to the new job");
+      const added = await this.client.post(company, `/employeeJob/${id}/job`,
+        { ...payload.add, payTypeCode: pay.payTypeCode, payRate: pay.payRate, salaryHours: pay.payTypeCode === "S" ? 40 : null });
       const newJob = Array.isArray(added) ? added.find((j: any) => Number(j.jobCode) === Number(payload.add.jobCode)) : added;
       responseRef = `job:${newJob?.jobId ?? payload.add.jobCode}`;
     }
@@ -233,10 +242,20 @@ export class ClearviewConnector implements Connector {
   }
 }
 
-/** The latest pay rate on a Clearview job (effective on or before today). */
-export function currentRate(job: any): number {
+/** Clearview pay type ("Hourly", "Salary", "Salaried", "H", "S") -> H / S; null when unknown. */
+export function normalizePayType(v: unknown): "H" | "S" | null {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (!s) return null;
+  if (s === "H" || s.startsWith("HOUR")) return "H";
+  if (s === "S" || s.startsWith("SAL")) return "S";
+  return null;
+}
+
+/** The latest pay row on a Clearview job (effective on or before today): rate and pay type. */
+export function currentPay(job: any): { payRate: number; payTypeCode: "H" | "S" | null } {
   const today = new Date().toISOString().slice(0, 10);
   const rows: any[] = (job?.payRates ?? []).filter((p: any) => String(p.effectiveDate ?? "").slice(0, 10) <= today);
   rows.sort((a, b) => String(b.effectiveDate).localeCompare(String(a.effectiveDate)));
-  return Number(rows[0]?.payRate ?? 0);
+  return { payRate: Number(rows[0]?.payRate ?? 0), payTypeCode: normalizePayType(rows[0]?.payType ?? rows[0]?.payTypeCode) };
 }
+export const currentRate = (job: any): number => currentPay(job).payRate;

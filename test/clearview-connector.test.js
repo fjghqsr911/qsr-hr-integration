@@ -7,7 +7,8 @@ const SIN = "123456789";
 
 module.exports = async () => {
   const { ClearviewClient, ClearviewError, safeMessage, _resetFirstCallLog } = require(path.join(DIST, "shared", "clearview", "client.js"));
-  const { ClearviewConnector, ClearviewApiReads, classify, currentRate } = require(path.join(DIST, "shared", "clearview", "connector.js"));
+  const { ClearviewConnector, ClearviewApiReads, classify, currentRate, currentPay, normalizePayType } = require(path.join(DIST, "shared", "clearview", "connector.js"));
+  const { codeKey } = require(path.join(DIST, "shared", "delivery.js"));
   const { discover, tdlDigits, hubDigits } = require(path.join(DIST, "shared", "clearview", "discover.js"));
   const { DeliveryError } = require(path.join(DIST, "shared", "delivery.js"));
 
@@ -181,12 +182,14 @@ module.exports = async () => {
   });
 
   await test("connector: store transfer - GET assignments, POST new, end the open previous one (PUT), PATCH reporting store; existing assignment -> no POST; PATCH 400 -> warning only", async () => {
-    const payload = { assignment: { storeId: 2283, startDate: "2026-11-03", nameOnRegister: "Ann Example" }, endPrevious: { assignmentId: "$lookup:previousAssignmentId", endDate: "2026-11-02" }, reportingStoreId: 2283 };
-    const open = [{ assignmentId: 901, storeId: 18, storeNumber: 2462, startDate: "2025-01-01", endDate: null, employeeNameOnRegister: "Ann" }];
+    const payload = { assignment: { storeId: 2283, startDate: "2026-11-03", nameOnRegister: "Ann Example" }, endPrevious: { fromStore: "T02462", storeId: 18, storeNumber: 2462, assignmentId: "$lookup:previousAssignmentId", endDate: "2026-11-02" }, reportingStoreId: 2283 };
+    const open = [{ assignmentId: 901, storeId: 18, storeNumber: 2462, startDate: "2025-01-01", endDate: null, employeeNameOnRegister: "Ann" },
+                  { assignmentId: 905, storeId: 99, storeNumber: 9999, startDate: "2025-06-01", endDate: null, employeeNameOnRegister: "Ann" },        // shared staff: unrelated open assignment stays
+                  { assignmentId: 880, storeId: 18, storeNumber: 2462, startDate: "2024-01-01", endDate: "2024-12-31" }];                           // already ended
     let f = fakeFetch({ "GET /api/v2/employeeStoreAssignment/55501": [200, open], "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 902 }],
                         "PUT /api/v2/employeeStoreAssignment/55501/assignment/901": [200, {}], "PATCH /api/v2/employee/55501": [200, {}] });
     let r = await connector(f).execute(planOf("store", payload), ctxFor({ delivery: { ...ctxFor().delivery, action: "store" } }));
-    eq(seq(f), ["GET /employeeStoreAssignment/55501", "POST /employeeStoreAssignment/55501", "PUT /employeeStoreAssignment/55501/assignment/901", "PATCH /employee/55501"]);
+    eq(seq(f), ["GET /employeeStoreAssignment/55501", "POST /employeeStoreAssignment/55501", "PUT /employeeStoreAssignment/55501/assignment/901", "PATCH /employee/55501"], "only the from_store assignment is ended");
     eq(f.calls[0].query.includeInactiveStoreAssignment, "false");
     eq(f.calls[1].body, payload.assignment);
     eq(f.calls[2].body, { storeId: 18, startDate: "2025-01-01", endDate: "2026-11-02", nameOnRegister: "Ann", idOnRegister: null });
@@ -202,6 +205,16 @@ module.exports = async () => {
     eq(r.warning, "store assignment already present; reporting store not changed: Clearview 400 on PATCH /employee/55501: reportingStoreId is read only");
     await c.execute(planOf("store", payload), ctxFor());
     eq(logs.length, 1, "the PATCH rejection is logged once per run");
+    // previous store matched by storeNumber alone, by neither (warning, nothing ended), or not mapped at all (warning)
+    f = fakeFetch({ "GET /api/v2/employeeStoreAssignment/55501": [200, open], "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 1 }], "PUT /api/v2/employeeStoreAssignment/55501/assignment/901": [200, {}], "PATCH /api/v2/employee/55501": [200, {}] });
+    await connector(f).execute(planOf("store", { ...payload, endPrevious: { ...payload.endPrevious, storeId: null } }), ctxFor());
+    eq(seq(f)[2], "PUT /employeeStoreAssignment/55501/assignment/901");
+    f = fakeFetch({ "GET /api/v2/employeeStoreAssignment/55501": [200, open], "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 1 }], "PATCH /api/v2/employee/55501": [200, {}] });
+    r = await connector(f).execute(planOf("store", { ...payload, endPrevious: { ...payload.endPrevious, fromStore: "T00037", storeId: 5, storeNumber: 37 } }), ctxFor());
+    eq(seq(f), ["GET /employeeStoreAssignment/55501", "POST /employeeStoreAssignment/55501", "PATCH /employee/55501"]); eq(r.warning, "no open assignment for previous store T00037; nothing ended");
+    f = fakeFetch({ "GET /api/v2/employeeStoreAssignment/55501": [200, open], "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 1 }], "PATCH /api/v2/employee/55501": [200, {}] });
+    r = await connector(f).execute(planOf("store", { ...payload, endPrevious: { ...payload.endPrevious, fromStore: "T99999", storeId: null, storeNumber: null } }), ctxFor());
+    eq(seq(f).length, 3); eq(r.warning, "previous store T99999 is not mapped; no assignment ended");
     const temp = { ...payload, endPrevious: null, reportingStoreId: null };
     f = fakeFetch({ "GET /api/v2/employeeStoreAssignment/55501": [200, open], "POST /api/v2/employeeStoreAssignment/55501": [200, { assignmentId: 903 }] });
     await connector(f).execute(planOf("store", temp), ctxFor());
@@ -209,15 +222,25 @@ module.exports = async () => {
   });
 
   await test("connector: job - target already on file -> PUT primary; else POST with the current primary rate; old primary demoted; already primary -> no write", async () => {
-    const payload = { add: { jobCode: 10, jobStatus: "A", primaryJob: true, payRate: "$lookup:currentPrimaryRate", effectiveDate: "2026-11-01" }, promote: { jobId: 9444, primaryJob: true, jobStatus: "A" }, demote: { jobId: "$lookup:primaryJobId", primaryJob: false, jobStatus: "I" } };
-    const jobs = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2025-01-01", payRate: 16 }, { payId: 2, effectiveDate: "2026-06-01", payRate: 17.5 }, { payId: 3, effectiveDate: "2099-01-01", payRate: 99 }] }];
+    const payload = { add: { jobCode: 10, jobStatus: "A", primaryJob: true, payTypeCode: "$lookup:currentPrimaryPayType", payRate: "$lookup:currentPrimaryRate", effectiveDate: "2026-11-01" }, promote: { jobId: 9444, primaryJob: true, jobStatus: "A" }, demote: { jobId: "$lookup:primaryJobId", primaryJob: false, jobStatus: "I" } };
+    const jobs = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2025-01-01", payRate: 16, payType: "Hourly" }, { payId: 2, effectiveDate: "2026-06-01", payRate: 17.5, payType: "Hourly" }, { payId: 3, effectiveDate: "2099-01-01", payRate: 99, payType: "Salary" }] }];
     let f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, jobs], "POST /api/v2/employeeJob/55501/job": [200, [...jobs, { jobId: 9444, jobCode: 10 }]], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     let r = await connector(f).execute(planOf("job", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501", "POST /employeeJob/55501/job", "PUT /employeeJob/55501/job/9441"]);
     eq(f.calls[0].query.includeInactiveJobs, "true");
-    eq(f.calls[1].body, { jobCode: 10, jobStatus: "A", primaryJob: true, payRate: 17.5, effectiveDate: "2026-11-01" }, "rate = current primary rate (future-dated rows ignored)");
+    eq(f.calls[1].body, { jobCode: 10, jobStatus: "A", primaryJob: true, payTypeCode: "H", payRate: 17.5, effectiveDate: "2026-11-01", salaryHours: null }, "rate and pay type = current primary (future-dated rows ignored)");
     eq(f.calls[2].body, { primaryJob: false, jobStatus: "I" }); eq(r.responseRef, "job:9444");
-    eq(currentRate(jobs[0]), 17.5); eq(currentRate({ payRates: [] }), 0);
+    eq(currentRate(jobs[0]), 17.5); eq(currentRate({ payRates: [] }), 0); eq(currentPay(jobs[0]), { payRate: 17.5, payTypeCode: "H" });
+    eq(["Hourly", "hourly", "H", "Salary", "Salaried", "S", "", null, "Piece"].map(normalizePayType), ["H", "H", "H", "S", "S", "S", null, null, null]);
+    // salaried primary: the new job is salaried too, with salaryHours 40
+    const salaried = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 52000, payType: "Salaried" }] }];
+    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, salaried], "POST /api/v2/employeeJob/55501/job": [200, [{ jobId: 9444, jobCode: 10 }]], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
+    await connector(f).execute(planOf("job", payload), ctxFor());
+    eq(f.calls[1].body, { jobCode: 10, jobStatus: "A", primaryJob: true, payTypeCode: "S", payRate: 52000, effectiveDate: "2026-11-01", salaryHours: 40 });
+    const untyped = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 20 }] }];
+    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, untyped], "POST /api/v2/employeeJob/55501/job": [200, []], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
+    await connector(f).execute(planOf("job", payload), ctxFor());
+    eq(f.calls[1].body.payTypeCode, null, "unknown pay type is sent as null, never guessed");
     f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [...jobs, { jobId: 9444, jobCode: 10, jobStatus: "I", primary: false }]], "PUT /api/v2/employeeJob/55501/job/9444": [200, {}], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     r = await connector(f).execute(planOf("job", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501", "PUT /employeeJob/55501/job/9444", "PUT /employeeJob/55501/job/9441"]); eq(f.calls[1].body, { primaryJob: true, jobStatus: "A" });
@@ -342,23 +365,25 @@ module.exports = async () => {
       "GET /api/v2/terminationReason": [200, [{ terminationReasonId: 13078, name: "Resigned", code: "RES" }]],
       "GET /api/v2/organization/filecontrol": [200, [{ attributeName: "SocialInsuranceNumber", isRequired: true }, { attributeName: "BirthDate", isRequired: true }]]
     });
-    const existing = { store: new Map(), job: new Map([["GM", { destinationCode: "4", destinationId: "9442" }], ["TM", { destinationCode: "1", destinationId: "9441" }]]), termination: new Map([["VOLUNTARY", { destinationCode: "13078", destinationId: "13078" }], ["OLD", { destinationCode: "1", destinationId: "1" }]]), category: new Map(), company: new Map() };
+    const row = (company, ukgCode, destinationCode, destinationId) => [codeKey(company, ukgCode), { ukgCode, company, destinationCode, destinationId }];
+    const existing = { store: new Map(), job: new Map([row("SWN6T", "GM", "4", "9442"), row("", "TM", "1", "9441")]), termination: new Map([row("", "VOLUNTARY", "13078", "13078"), row("SWNGK", "OLD", "1", "1")]), category: new Map(), company: new Map() };
     const s = discoveryStore({ existing });
     const byKey = async (url, init) => new URL(url).searchParams.get("authorizationKey") === "x"        // the second key belongs to no organization
       ? { ok: false, status: 404, text: async () => JSON.stringify({ message: "Not Found" }) } : f(url, init);
     const report = await discover(client(byKey, { SWN6T: KEY, SWNGK: "x" }), s, { companies: ["SWN6T", "SWNGK", "M9WOJ"] });
     eq(report.stores.paired, 2); eq(report.stores.unpairedHub, ["T00037"]);
     eq(report.stores.unpairedClearview.map(x => x.storeId), [77]);
-    eq(s.written.find(r => r.codeType === "store" && r.ukgCode === "T22446"), { codeType: "store", ukgCode: "T22446", destinationCode: "122446", destinationId: "2283", notes: "org 18 · tdl 122446 · Store 22446" });
+    eq(s.written.find(r => r.codeType === "store" && r.ukgCode === "T22446"), { codeType: "store", company: "", ukgCode: "T22446", destinationCode: "122446", destinationId: "2283", notes: "org 18 · tdl 122446 · Store 22446" }, "stores are written as shared rows");
     eq(s.written.find(r => r.codeType === "store" && r.ukgCode === "T02462").destinationCode, "2462");
-    eq(s.written.find(r => r.codeType === "company"), { codeType: "company", ukgCode: "SWN6T", destinationCode: "18", destinationId: null, notes: "employerCode O01189 · Org A" });
+    eq(s.written.find(r => r.codeType === "company"), { codeType: "company", company: "", ukgCode: "SWN6T", destinationCode: "18", destinationId: null, notes: "employerCode O01189 · Org A" });
+    assert(s.written.every(r => r.company === ""), "discover never writes company-specific rows (jobs are paired by a person in 17)");
     const org = report.organizations[0];
     eq(org.jobs.map(j => `${j.jobCode} ${j.name} ${j.abbreviation}`), ["1 Counter Staff CS", "10 Supervisor SV"]);
     eq(org.terminationReasons, [{ terminationReasonId: 13078, name: "Resigned", code: "RES" }]); eq(org.mandatoryAttributes, ["SocialInsuranceNumber", "BirthDate"]);
     eq(org.employerCode, "O01189"); eq(org.stores.find(x => x.storeId === 18).pairedWith, "T02462");
     assert(report.organizations[1].error, "second company's key failed (404 fake) and is reported");   // SWNGK key hits the 404 default
     eq(report.organizations[2].error, "no authorizationKey");
-    eq(report.staleMappings, [{ codeType: "job", ukgCode: "GM", destinationCode: "4", destinationId: "9442" }, { codeType: "termination", ukgCode: "OLD", destinationCode: "1", destinationId: "1" }]);
+    eq(report.staleMappings, [{ codeType: "job", company: "SWN6T", ukgCode: "GM", destinationCode: "4", destinationId: "9442" }, { codeType: "termination", company: "SWNGK", ukgCode: "OLD", destinationCode: "1", destinationId: "1" }]);
     eq(tdlDigits("122446"), "22446"); eq(tdlDigits("102462"), "2462"); eq(tdlDigits("2462"), null); eq(hubDigits("T02462"), "2462"); eq(hubDigits("T22446"), "22446");
     assert(f.calls.every(c => c.method === "GET"), "discovery only reads");
     assert(f.calls.some(c => c.path === "/api/v2/organization/filecontrol" && c.query.requiredAttributesOnly === "true"));

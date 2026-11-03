@@ -1,7 +1,7 @@
 import { sql } from "./sql";
 import {
   ClaimedDelivery, CodeMaps, CodeType, DeliveryContext, DeliveryStore, EmploymentContext, EventContext, PendingCreate,
-  QueueStats, pickEmployment
+  QueueStats, codeKey, pickEmployment
 } from "./delivery";
 
 /*
@@ -15,8 +15,15 @@ const ACTION_RANK_SQL = `CASE d.action WHEN 'create' THEN 0 WHEN 'job' THEN 1 WH
                                        WHEN 'update' THEN 4 WHEN 'terminate' THEN 5 ELSE 9 END`;
 
 /** Due pending / failed / waiting rows for one destination, skipping employees that have a blocking row
- *  (dead, or failed / waiting not yet due), ordered per employee by effective date, action rank, id. */
+ *  (dead, or failed / waiting not yet due), ordered per employee by effective date, action rank, id.
+ *  First, any claimable row that a newer version of the same event has replaced is marked superseded: the event rebuild
+ *  supersedes pending / failed rows itself, but never a waiting one (it did not exist when that rule was written). */
 export const CLAIM_SQL = `
+SET NOCOUNT ON;
+UPDATE d SET status = 'superseded', finished_utc = SYSUTCDATETIME()
+FROM [out].deliveries d
+WHERE d.destination = @destination AND d.status IN ('pending', 'failed', 'waiting')
+  AND EXISTS (SELECT 1 FROM [out].deliveries n WHERE n.destination = d.destination AND n.event_key = d.event_key AND n.version > d.version);
 WITH blocked AS (
     SELECT DISTINCT employee_id FROM [out].deliveries
     WHERE destination = @destination
@@ -28,6 +35,7 @@ WHERE d.destination = @destination
   AND d.status IN ('pending', 'failed', 'waiting')
   AND (d.next_attempt_utc IS NULL OR d.next_attempt_utc <= SYSUTCDATETIME())
   AND NOT EXISTS (SELECT 1 FROM blocked b WHERE b.employee_id = d.employee_id)
+  AND NOT EXISTS (SELECT 1 FROM [out].deliveries n WHERE n.destination = d.destination AND n.event_key = d.event_key AND n.version > d.version)
 ORDER BY d.employee_id, d.effective_date, ${ACTION_RANK_SQL}, d.delivery_id;`;
 
 export const CONTEXT_SQL = `
@@ -40,7 +48,7 @@ SELECT external_id, source FROM xref.employees WHERE destination = @destination 
 SELECT mode FROM ref.store_modes WHERE destination = @destination AND store = @store;
 SELECT operation, payload_hash FROM [out].last_sent WHERE destination = @destination AND employee_id = @employeeId;`;
 
-export const CODES_SQL = `SELECT code_type, ukg_code, destination_code, destination_id FROM ref.destination_codes WHERE destination = @destination;`;
+export const CODES_SQL = `SELECT code_type, company, ukg_code, destination_code, destination_id FROM ref.destination_codes WHERE destination = @destination;`;
 
 export const STATS_SQL = `
 SELECT
@@ -116,7 +124,8 @@ export function mapCodeRows(rows: any[]): CodeMaps {
   for (const r of rows) {
     const type = String(r.code_type) as CodeType;
     if (!(type in codes)) continue;
-    codes[type].set(String(r.ukg_code).toUpperCase(), { destinationCode: String(r.destination_code), destinationId: nz(r.destination_id) });
+    const ukgCode = String(r.ukg_code).trim().toUpperCase(), company = String(r.company ?? "").trim().toUpperCase();
+    codes[type].set(codeKey(company, ukgCode), { ukgCode, company, destinationCode: String(r.destination_code), destinationId: nz(r.destination_id) });
   }
   return codes;
 }
@@ -268,16 +277,17 @@ export class SqlDeliveryStore implements DeliveryStore {
   }
 
   /** Discovery: upsert store / company rows found in Clearview (never deletes a mapping). */
-  async upsertCodes(rows: { codeType: CodeType; ukgCode: string; destinationCode: string; destinationId: string | null; notes: string | null }[]): Promise<void> {
+  async upsertCodes(rows: { codeType: CodeType; company?: string; ukgCode: string; destinationCode: string; destinationId: string | null; notes: string | null }[]): Promise<void> {
     if (!rows.length) return;
-    await this.pool.request().input("destination", sql.VarChar(20), this.destination).input("rows", sql.NVarChar(sql.MAX), JSON.stringify(rows)).query(`
+    const withCompany = rows.map(r => ({ ...r, company: (r.company ?? "").trim().toUpperCase() }));
+    await this.pool.request().input("destination", sql.VarChar(20), this.destination).input("rows", sql.NVarChar(sql.MAX), JSON.stringify(withCompany)).query(`
       MERGE ref.destination_codes WITH (HOLDLOCK) AS t
-      USING (SELECT @destination AS destination, codeType AS code_type, ukgCode AS ukg_code, destinationCode AS destination_code, destinationId AS destination_id, notes
-             FROM OPENJSON(@rows) WITH (codeType varchar(20), ukgCode varchar(20), destinationCode nvarchar(50), destinationId nvarchar(50), notes nvarchar(200))) AS s
-         ON t.destination = s.destination AND t.code_type = s.code_type AND t.ukg_code = s.ukg_code
+      USING (SELECT @destination AS destination, codeType AS code_type, company, ukgCode AS ukg_code, destinationCode AS destination_code, destinationId AS destination_id, notes
+             FROM OPENJSON(@rows) WITH (codeType varchar(20), company varchar(10), ukgCode varchar(20), destinationCode nvarchar(50), destinationId nvarchar(50), notes nvarchar(200))) AS s
+         ON t.destination = s.destination AND t.code_type = s.code_type AND t.company = s.company AND t.ukg_code = s.ukg_code
       WHEN MATCHED THEN UPDATE SET destination_code = s.destination_code, destination_id = s.destination_id, notes = s.notes, updated_utc = SYSUTCDATETIME()
-      WHEN NOT MATCHED THEN INSERT (destination, code_type, ukg_code, destination_code, destination_id, notes)
-                            VALUES (s.destination, s.code_type, s.ukg_code, s.destination_code, s.destination_id, s.notes);`);
+      WHEN NOT MATCHED THEN INSERT (destination, code_type, company, ukg_code, destination_code, destination_id, notes)
+                            VALUES (s.destination, s.code_type, s.company, s.ukg_code, s.destination_code, s.destination_id, s.notes);`);
     this.codes = null;
   }
 

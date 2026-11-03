@@ -1,4 +1,4 @@
-import { DeliveryContext, MappingError, Plan, PlanOutcome, PlanStep, Sensitive, SensitiveNeed, payloadHash } from "../delivery";
+import { DeliveryContext, DestinationCode, MappingError, Plan, PlanOutcome, PlanStep, Sensitive, SensitiveNeed, findCode, payloadHash } from "../delivery";
 
 /*
   PURE mapping from a hub delivery (+ what was read from UKG at send time) to the Clearview v2 call sequence.
@@ -24,11 +24,13 @@ export const LOOKUP = {
   assignmentId: "$lookup:previousAssignmentId",     // the store assignment being ended on a transfer
   primaryJobId: "$lookup:primaryJobId",             // the employee's current primary job id
   primaryRate: "$lookup:currentPrimaryRate",        // the employee's current primary pay rate
+  primaryPayType: "$lookup:currentPrimaryPayType",  // H / S of that rate (carried to a new job)
   payId: "$lookup:existingPayId"
 } as const;
 
-export const DOB_MASK = "****-**-**", SIN_MASK = "*********", PAY_MASK = "***";
+export const DOB_MASK = "****-**-**", SIN_MASK = "*********", PAY_MASK = "***", EMAIL_MASK = "***@***";
 const SIN_KEYS = new Set(["sin", "sinno", "nationalid", "ssn"]);
+const EMAIL_KEYS = new Set(["email", "emailaddress", "personalemail"]);     // contact details are sensitive tier: masked like SIN
 const DOB_KEYS = new Set(["birthdate", "dateofbirth"]);
 const PAY_KEYS = new Set(["payrate", "hourlypayrate", "annualsalary"]);
 
@@ -48,15 +50,16 @@ function redact(value: unknown, maskPay: boolean): unknown {
     if (typeof v === "object") { const o: Record<string, unknown> = {}; for (const k of Object.keys(v)) o[k] = walk(v[k], k.toLowerCase()); return o; }
     if (key && SIN_KEYS.has(key)) return SIN_MASK;
     if (key && DOB_KEYS.has(key)) return DOB_MASK;
+    if (key && EMAIL_KEYS.has(key)) return EMAIL_MASK;
     if (maskPay && key && PAY_KEYS.has(key)) return PAY_MASK;
     return v;
   };
   return walk(value, null);
 }
 
-/** Masks DOB and SIN but keeps pay (a rate change must change the hash). Nothing derived from SIN or DOB survives. */
+/** Masks DOB, SIN and email but keeps pay (a rate change must change the hash). Nothing derived from SIN, DOB or email survives. */
 export const redactForHash = (payload: unknown) => redact(payload, false);
-/** Masks DOB, SIN and pay: the copy kept in out.shadow_payloads for admins to inspect. */
+/** Masks DOB, SIN, email and pay: the copy kept in out.shadow_payloads for admins to inspect. */
 export const redactForStore = (payload: unknown) => redact(payload, true);
 export const hashPayload = (payload: unknown): Buffer => payloadHash(redactForHash(payload));
 
@@ -78,8 +81,11 @@ export function payOf(s: Sensitive): { payTypeCode: "H" | "S"; payRate: number }
   return { payTypeCode: salaried ? "S" : "H", payRate: rate };
 }
 
+/** The mapping for the employee's organization (company-specific row first, then the shared one). */
+const lookup = (ctx: DeliveryContext, type: "store" | "job" | "termination", ukg: string | null | undefined): DestinationCode | undefined =>
+  findCode(ctx.codes, type, ctx.employment?.companyId, ukg);
 const code = (ctx: DeliveryContext, type: "store" | "job", ukg: string | null, what: string) => {
-  const m = ukg ? ctx.codes[type].get(up(ukg)) : undefined;
+  const m = lookup(ctx, type, ukg);
   if (!m) throw new MappingError(`no clearview ${type === "store" ? "store" : "job code"} for UKG ${what} ${ukg ?? "(none)"}`);
   return m;
 };
@@ -130,8 +136,8 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
         const sid = storeId(ctx, store);
         const payload = {
           rehireDate: emp.lastHireDate ?? eff, reportingStoreId: sid,
-          storeAssignments: [{ storeId: sid, employeeNameOnRegister: displayName(emp) }],
-          jobs: [{ jobKey: jobId(ctx, emp.jobCode), payTypeCode: pay.payTypeCode, payRate: pay.payRate, primaryJobFlag: true,
+          storeAssignments: [{ storeId: sid, employeeNameOnRegister: displayName(emp), employeeIdOnRegister: null }],
+          jobs: [{ jobId: jobId(ctx, emp.jobCode), payTypeCode: pay.payTypeCode, payRate: pay.payRate, primaryJob: true,
                    salaryHours: pay.payTypeCode === "S" ? 40 : null }]
         };
         steps.push({ method: "GET", path: `/employee/${ref}`, note: "already active -> sent; rehire date on or before the termination -> dead" });
@@ -164,7 +170,7 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
       return done("import", payload);
     }
     case "terminate": {
-      const reason = ev.terminationCategory ? ctx.codes.termination.get(up(ev.terminationCategory)) : undefined;
+      const reason = lookup(ctx, "termination", ev.terminationCategory);
       const payload = { terminationDate: eff, terminationReasonId: reason ? toInt(reason.destinationId ?? reason.destinationCode, "terminationReasonId") : cfg.terminationReasonId };
       steps.push({ method: "GET", path: `/employee/${ref}`, note: "already inactive with the same date -> sent; different date -> PUT" });
       steps.push({ method: "POST", path: `/employeeStatus/${ref}/terminate`, body: payload });
@@ -173,9 +179,14 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
     case "store": {
       const sid = storeId(ctx, ev.toStore);
       const transfer = ev.eventType === "Store transfer";
+      const previous = transfer ? lookup(ctx, "store", ev.fromStore) : undefined;      // unmapped previous store: the connector warns, nothing is ended
       const payload = {
         assignment: { storeId: sid, startDate: eff, nameOnRegister: displayName(emp) },
-        endPrevious: transfer ? { assignmentId: LOOKUP.assignmentId, endDate: dayBefore(eff) } : null,
+        endPrevious: transfer ? {
+          fromStore: ev.fromStore, storeId: previous?.destinationId ? toInt(previous.destinationId, "storeId") : null,
+          storeNumber: previous ? toInt(previous.destinationCode, "store number") : null,
+          assignmentId: LOOKUP.assignmentId, endDate: dayBefore(eff)
+        } : null,
         reportingStoreId: transfer ? sid : null
       };
       steps.push({ method: "GET", path: `/employeeStoreAssignment/${ref}`, note: "assignment for this store already present -> skip the POST" });
@@ -189,7 +200,7 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
     case "job": {
       const target = code(ctx, "job", ev.toJob, "job");
       const payload = {
-        add: { jobCode: toInt(target.destinationCode, "job code"), jobStatus: "A", primaryJob: true, payRate: LOOKUP.primaryRate, effectiveDate: eff },
+        add: { jobCode: toInt(target.destinationCode, "job code"), jobStatus: "A", primaryJob: true, payTypeCode: LOOKUP.primaryPayType, payRate: LOOKUP.primaryRate, effectiveDate: eff },
         promote: { jobId: target.destinationId ? toInt(target.destinationId, "jobId") : null, primaryJob: true, jobStatus: "A" },
         demote: { jobId: LOOKUP.primaryJobId, primaryJob: false, jobStatus: "I" }
       };

@@ -7,7 +7,7 @@ const SIN = "123456789";
 const NOW = new Date("2026-11-02T15:00:00Z");
 
 module.exports = async () => {
-  const { runDeliveries, RETRY_DELAYS_MS, WAITING_DELAY_MS, MappingError, DeliveryError, canonicalJson, payloadHash, orderDeliveries, pickEmployment } =
+  const { runDeliveries, RETRY_DELAYS_MS, WAITING_DELAY_MS, MappingError, DeliveryError, canonicalJson, payloadHash, orderDeliveries, pickEmployment, codeKey, findCode } =
     require(path.join(DIST, "shared", "delivery.js"));
   const { SqlDeliveryStore, CLAIM_SQL, CONTEXT_SQL, STATS_SQL, PENDING_CREATES_SQL, PURGE_SHADOW_SQL, mapCodeRows, mapClaimedRow } =
     require(path.join(DIST, "shared", "deliveryStore.js"));
@@ -283,6 +283,9 @@ module.exports = async () => {
     assert(/WHEN 'create' THEN 0 WHEN 'job' THEN 1 WHEN 'store' THEN 2 WHEN 'pay' THEN 3\s+WHEN 'update' THEN 4 WHEN 'terminate' THEN 5/.test(CLAIM_SQL), "action order");
     assert(/ORDER BY d\.employee_id, d\.effective_date, CASE/.test(CLAIM_SQL) && /, d\.delivery_id;$/.test(CLAIM_SQL.trim()) && /TOP \(@limit\)/.test(CLAIM_SQL), "ordering + cap");
     assert(/NOT EXISTS \(SELECT 1 FROM blocked b WHERE b\.employee_id = d\.employee_id\)/.test(CLAIM_SQL));
+    // a row with a newer version of the same event (the rebuild supersedes pending / failed itself, never waiting) is neither claimed nor left behind
+    assert(/AND NOT EXISTS \(SELECT 1 FROM \[out\]\.deliveries n WHERE n\.destination = d\.destination AND n\.event_key = d\.event_key AND n\.version > d\.version\)\s+ORDER BY/.test(CLAIM_SQL), "claim excludes superseded versions");
+    assert(/^SET NOCOUNT ON;\s*UPDATE d SET status = 'superseded', finished_utc = SYSUTCDATETIME\(\)\s+FROM \[out\]\.deliveries d\s+WHERE d\.destination = @destination AND d\.status IN \('pending', 'failed', 'waiting'\)\s+AND EXISTS \(SELECT 1 FROM \[out\]\.deliveries n WHERE n\.destination = d\.destination AND n\.event_key = d\.event_key AND n\.version > d\.version\);/.test(CLAIM_SQL.trim()), "claim marks replaced waiting rows superseded first");
     for (const t of ["rpt.workforce_events", "stage.employment_current", "xref.employees", "ref.store_modes", "[out].last_sent"]) assert(CONTEXT_SQL.includes(t), `context reads ${t}`);
     assert(/response_ref LIKE 'import:%'/.test(PENDING_CREATES_SQL) && /NOT EXISTS \(SELECT 1 FROM xref\.employees/.test(PENDING_CREATES_SQL));
     assert(/DELETE TOP \(5000\) p FROM \[out\]\.shadow_payloads/.test(PURGE_SHADOW_SQL) && /DATEADD\(day, -@days/.test(PURGE_SHADOW_SQL));
@@ -300,7 +303,7 @@ module.exports = async () => {
   });
 
   await test("store SQL: mark transitions write the right statuses and never a value; context maps rows; codes map upper-cases UKG codes", async () => {
-    const pool = fakePool((text) => /ref.destination_codes/.test(text) ? { recordset: [{ code_type: "store", ukg_code: "t22446", destination_code: "122446", destination_id: "2283" }, { code_type: "bogus", ukg_code: "x", destination_code: "1" }] } :
+    const pool = fakePool((text) => /ref.destination_codes/.test(text) ? { recordset: [{ code_type: "store", company: "", ukg_code: "t22446", destination_code: "122446", destination_id: "2283" }, { code_type: "job", company: "swngk", ukg_code: "SH", destination_code: "77", destination_id: "70077" }, { code_type: "bogus", ukg_code: "x", destination_code: "1" }] } :
       /rpt.workforce_events/.test(text) ? { recordsets: [
         [{ event_type: "Pay change", effective_date: new Date("2026-11-01T00:00:00Z"), from_company: null, to_company: "SWN6T", from_store: null, to_store: "T22446", from_job: null, to_job: null, termination_category: null }],
         [{ employee_id: "E1", company_id: "SWNGK", employee_number: "1", is_home_company: false, employee_status: "A", org_level2: "T22446", job_code: "TM", first_name: "A", last_name: "B" },
@@ -311,7 +314,9 @@ module.exports = async () => {
     eq([d.deliveryId, d.effectiveDate, d.attempts], [9, "2026-11-01", 0]);
     const ctx = await s.loadContext(d);
     eq(ctx.storeMode, "live"); eq(ctx.employment.companyId, "SWN6T"); eq(ctx.employment.lastHireDate, "2026-01-02"); eq(ctx.xref, { externalId: "55501", source: "extract" });
-    eq(ctx.event.toStore, "T22446"); eq(ctx.codes.store.get("T22446"), { destinationCode: "122446", destinationId: "2283" }); eq(ctx.codes.store.size, 1);
+    eq(ctx.event.toStore, "T22446"); eq(ctx.codes.store.get(codeKey("", "T22446")), { ukgCode: "T22446", company: "", destinationCode: "122446", destinationId: "2283" }); eq(ctx.codes.store.size, 1);
+    eq(findCode(ctx.codes, "job", "SWNGK", "sh").destinationId, "70077"); eq(findCode(ctx.codes, "job", "SWN6T", "SH"), undefined, "a company row never applies to another company");
+    assert(/SELECT code_type, company, ukg_code/.test(pool.calls.find(c => /ref.destination_codes/.test(c.text)).text), "codes are read with their company");
     assert(ctx.lastSent.get("pay").equals(Buffer.alloc(32, 1)));
     eq(mapCodeRows([]).job.size, 0);
     await s.loadContext(d); eq(pool.calls.filter(c => /ref.destination_codes/.test(c.text)).length, 1, "codes read once per run");

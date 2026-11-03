@@ -6,9 +6,11 @@ const { DIST, FAKE_YEAR, test, report, assert, eq, noYear } = require("./helpers
 const FIXTURES = path.join(__dirname, "fixtures", "clearview");
 const SIN = "123456789";
 
-/** Code maps every fixture shares: Clearview store numbers / ids, organization job codes / ids, one termination reason. */
+const { codeKey, findCode } = require(path.join(DIST, "shared", "delivery.js"));
+/** Code maps every fixture shares (company '' = shared by both organizations): Clearview store numbers / ids, organization
+ *  job codes / ids, one termination reason. */
 function codes() {
-  const m = (pairs) => new Map(Object.entries(pairs).map(([k, [destinationCode, destinationId]]) => [k, { destinationCode, destinationId }]));
+  const m = (pairs, company = "") => new Map(Object.entries(pairs).map(([k, [destinationCode, destinationId]]) => [codeKey(company, k), { ukgCode: k, company, destinationCode, destinationId }]));
   return {
     store: m({ T22446: ["122446", "2283"], T02462: ["2462", "18"] }),
     job: m({ TM: ["1", "9441"], SH: ["10", "9444"], AM: ["4", "9442"], GM: ["4", "9442"] }),
@@ -25,7 +27,7 @@ function ctxFrom(f, over = {}) {
 }
 
 module.exports = async () => {
-  const { plan, redactForHash, redactForStore, hashPayload, sensitiveNeeds, dayBefore, DOB_MASK, SIN_MASK, PAY_MASK } = require(path.join(DIST, "shared", "clearview", "mapper.js"));
+  const { plan, redactForHash, redactForStore, hashPayload, sensitiveNeeds, dayBefore, DOB_MASK, SIN_MASK, PAY_MASK, EMAIL_MASK } = require(path.join(DIST, "shared", "clearview", "mapper.js"));
   const { MappingError, canonicalJson, payloadHash } = require(path.join(DIST, "shared", "delivery.js"));
   const fixtures = fs.readdirSync(FIXTURES).filter(n => n.endsWith(".json")).map(n => ({ file: n, ...JSON.parse(fs.readFileSync(path.join(FIXTURES, n), "utf8")) }));
   const byOp = Object.fromEntries(fixtures.map(f => [f.expected.operation, f]));
@@ -65,18 +67,24 @@ module.exports = async () => {
     eq(sensitiveNeeds(ctxFrom(byOp.pay)), ["pay"]); eq(sensitiveNeeds(ctxFrom(byOp.terminate)), []);
   });
 
-  await test("mapper: masks - stored copy hides DOB, SIN and pay; hash copy keeps pay", () => {
+  await test("mapper: masks - stored copy hides DOB, SIN, email and pay; hash copy keeps pay; email masked in both (sensitive tier)", () => {
     const f = byOp.import;
     const p = plan(ctxFrom(f), f.sensitive).plan;
+    eq(p.payload.standardInformation.email, "ann@example.com", "the request itself carries the email");
     const stored = redactForStore(p.payload), hashed = redactForHash(p.payload);
     eq(stored.standardInformation.birthDate, DOB_MASK); eq(stored.payAndBenefitInformation.sin, SIN_MASK); eq(stored.jobAndPayInformation.payRate, PAY_MASK);
     eq(hashed.standardInformation.birthDate, DOB_MASK); eq(hashed.payAndBenefitInformation.sin, SIN_MASK); eq(hashed.jobAndPayInformation.payRate, 17.5);
+    eq(stored.standardInformation.email, EMAIL_MASK); eq(hashed.standardInformation.email, EMAIL_MASK);
+    const noEmail = (v, where) => assert(!JSON.stringify(v).includes("ann@example.com") && !JSON.stringify(v).includes("example.com"), `email leaked into ${where}`);
     const text = JSON.stringify(stored);
-    noYear(text, "stored shadow payload"); assert(!text.includes(SIN) && !text.includes("456789"), "SIN digits in stored copy");
-    noYear(JSON.stringify(hashed), "hash input"); assert(!JSON.stringify(hashed).includes(SIN), "SIN digits in hash input");
+    noYear(text, "stored shadow payload"); assert(!text.includes(SIN) && !text.includes("456789"), "SIN digits in stored copy"); noEmail(stored, "stored shadow payload");
+    noYear(JSON.stringify(hashed), "hash input"); assert(!JSON.stringify(hashed).includes(SIN), "SIN digits in hash input"); noEmail(hashed, "hash input");
     const steps = redactForStore(p.steps);
-    noYear(JSON.stringify(steps), "stored steps"); assert(!JSON.stringify(steps).includes(SIN), "SIN in stored steps");
+    noYear(JSON.stringify(steps), "stored steps"); assert(!JSON.stringify(steps).includes(SIN), "SIN in stored steps"); noEmail(steps, "stored steps");
     eq(stored.standardInformation.firstName, "Ann", "names are not masked");
+    eq(redactForStore({ emailAddress: "a@b.c", personalEmail: "x@y.z", Email: "q@r.s", nested: [{ email: "n@n.n" }] }), { emailAddress: EMAIL_MASK, personalEmail: EMAIL_MASK, Email: EMAIL_MASK, nested: [{ email: EMAIL_MASK }] });
+    const otherEmail = plan(ctxFrom(f), { ...f.sensitive, email: "other@example.org" }).plan.payload;
+    assert(hashPayload(p.payload).equals(hashPayload(otherEmail)), "email must not affect the hash");
   });
 
   await test("mapper: hash stable across key order, changes with pay, not with SIN or DOB", () => {
@@ -98,16 +106,16 @@ module.exports = async () => {
 
   await test("mapper: unmapped store / job code -> MappingError (dead), never a default", () => {
     const f = byOp.import;
-    const noJob = codes(); noJob.job.delete("TM");
+    const noJob = codes(); noJob.job.delete(codeKey("", "TM"));
     let err = null; try { plan(ctxFrom(f, { codes: noJob }), f.sensitive); } catch (e) { err = e; }
     assert(err instanceof MappingError, "MappingError expected"); eq(err.message, "no clearview job code for UKG job TM");
-    const noStore = codes(); noStore.store.delete("T22446");
+    const noStore = codes(); noStore.store.delete(codeKey("", "T22446"));
     err = null; try { plan(ctxFrom(f, { codes: noStore }), f.sensitive); } catch (e) { err = e; }
     assert(err instanceof MappingError && /no clearview store for UKG store T22446/.test(err.message), err && err.message);
     const t = byOp.terminate;                                                     // termination reason: default allowed
     eq(plan(ctxFrom(t), t.sensitive).plan.payload.terminationReasonId, 13078);
     eq(plan(ctxFrom(t, { event: { terminationCategory: "Voluntary" } }), t.sensitive).plan.payload.terminationReasonId, 13078);
-    const mapped = codes(); mapped.termination.set("INVOLUNTARY", { destinationCode: "13090", destinationId: "13090" });
+    const mapped = codes(); mapped.termination.set(codeKey("", "INVOLUNTARY"), { ukgCode: "INVOLUNTARY", company: "", destinationCode: "13090", destinationId: "13090" });
     eq(plan(ctxFrom(t, { codes: mapped }), t.sensitive).plan.payload.terminationReasonId, 13090, "a mapped category overrides the default");
   });
 
@@ -145,6 +153,28 @@ module.exports = async () => {
     eq(plan(ctxFrom(s, { event: { toStore: "FIN" } }), s.sensitive).decision, "review");
     eq(plan(ctxFrom(f), f.sensitive, { companies: ["SWNGK"], excludedJobs: [], terminationReasonId: 1 }).decision, "skipped", "config drives the company list");
     eq(plan(ctxFrom(f, { employment: { jobCode: "MM" } }), f.sensitive, { companies: ["SWN6T"], excludedJobs: [], terminationReasonId: 1 }).decision, "send", "config drives the excluded jobs");
+  });
+
+  await test("mapper: codes per organization - a company-specific job / termination row wins over the shared one; stores stay shared; unmapped previous store carried as null", () => {
+    const j = byOp.job;
+    const c = codes();
+    c.job.set(codeKey("SWNGK", "SH"), { ukgCode: "SH", company: "SWNGK", destinationCode: "77", destinationId: "70077" });     // org 1690 numbers its Supervisor differently
+    eq(plan(ctxFrom(j, { codes: c }), j.sensitive).plan.payload.promote.jobId, 9444, "SWN6T uses the shared row");
+    const gk = plan(ctxFrom(j, { codes: c, event: { toCompany: "SWNGK" }, employment: { companyId: "SWNGK" } }), j.sensitive).plan.payload;
+    eq([gk.add.jobCode, gk.promote.jobId], [77, 70077], "SWNGK uses its own row");
+    c.job.delete(codeKey("", "SH"));
+    eq(plan(ctxFrom(j, { codes: c, employment: { companyId: "SWNGK" } }), j.sensitive).plan.payload.promote.jobId, 70077, "company row alone is enough for that company");
+    let err = null; try { plan(ctxFrom(j, { codes: c }), j.sensitive); } catch (e) { err = e; }
+    assert(err instanceof MappingError, "SWN6T has no SH row left -> MappingError");
+    eq(findCode(c, "store", "SWNGK", "T22446").destinationId, "2283", "stores are shared by both organizations");
+    eq(findCode(c, "store", null, "t22446").destinationId, "2283"); eq(findCode(c, "store", "SWN6T", null), undefined);
+    const t = byOp.terminate;
+    c.termination.set(codeKey("SWNGK", "INVOLUNTARY"), { ukgCode: "INVOLUNTARY", company: "SWNGK", destinationCode: "500", destinationId: "500" });
+    eq(plan(ctxFrom(t, { codes: c, event: { terminationCategory: "Involuntary" }, employment: { companyId: "SWNGK" } }), t.sensitive).plan.payload.terminationReasonId, 500);
+    eq(plan(ctxFrom(t, { codes: c, event: { terminationCategory: "Involuntary" } }), t.sensitive).plan.payload.terminationReasonId, 13078, "SWN6T falls back to the default");
+    const s = byOp.store;
+    const prev = plan(ctxFrom(s, { event: { fromStore: "T99999" } }), s.sensitive).plan.payload.endPrevious;
+    eq([prev.fromStore, prev.storeId, prev.storeNumber], ["T99999", null, null], "an unmapped previous store does not fail the plan");
   });
 
   await test("mapper: store action - temporary transfer adds an assignment without ending the old one; update FT/PT from the event", () => {

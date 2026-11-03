@@ -12,8 +12,8 @@
     "lastStepPath": "/employeeStatus/55501/rehire",
     "payload": {
       "rehireDate": "2026-11-10", "reportingStoreId": 18,
-      "storeAssignments": [{ "storeId": 18, "employeeNameOnRegister": "Ann Example" }],
-      "jobs": [{ "jobKey": 9444, "payTypeCode": "S", "payRate": 52000, "primaryJobFlag": true, "salaryHours": 40 }]
+      "storeAssignments": [{ "storeId": 18, "employeeNameOnRegister": "Ann Example", "employeeIdOnRegister": null }],
+      "jobs": [{ "jobId": 9444, "payTypeCode": "S", "payRate": 52000, "primaryJob": true, "salaryHours": 40 }]
     }
   }
 }

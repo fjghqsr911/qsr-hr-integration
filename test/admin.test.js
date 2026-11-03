@@ -81,7 +81,7 @@ module.exports = async () => {
   const deliveryPool = (row, after = {}) => fakePool((text) => {
     if (/^SELECT/.test(text.trim())) return { recordset: row ? [row] : [] };
     if (text === DELIVERY_RETRY_SQL)   return { recordset: row && ["failed", "dead"].includes(row.status) ? [{ ...row, status: "pending", next_attempt_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
-    if (text === DELIVERY_RESOLVE_SQL) return { recordset: row && row.status === "review" ? [{ ...row, status: "resolved", finished_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
+    if (text === DELIVERY_RESOLVE_SQL) return { recordset: row && ["review", "dead"].includes(row.status) ? [{ ...row, status: "resolved", finished_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
     throw new Error(`unexpected SQL: ${text}`);
   });
 
@@ -121,13 +121,16 @@ module.exports = async () => {
       eq(pool.calls.length, 1, "read only"); eq(audits.length, 0, "a refused change is not audited");
     }
   });
-  await test("resolve: review -> resolved with finished_utc; other statuses -> 409", async () => {
+  await test("resolve: review or dead -> resolved with finished_utc; other statuses -> 409", async () => {
     reset(); pool = deliveryPool(delivery({ status: "review" }));
     const res = await hubDeliveryResolve(req(admin, { id: "42" }), ctx);
     eq([res.jsonBody.status, res.jsonBody.finishedUtc], ["resolved", "2026-10-30T12:00:00.000Z"]);
-    assert(/SET status = 'resolved', finished_utc = SYSUTCDATETIME\(\)/.test(DELIVERY_RESOLVE_SQL) && /status = 'review'/.test(DELIVERY_RESOLVE_SQL));
+    assert(/SET status = 'resolved', finished_utc = SYSUTCDATETIME\(\)/.test(DELIVERY_RESOLVE_SQL) && /status IN \('review', 'dead'\)/.test(DELIVERY_RESOLVE_SQL));
     eq(audits.map(a => [a.endpoint, a.employeeId, a.fields, a.outcome]), [["POST /hub/deliveries/{id}/resolve", "E123", ["status"], "allowed"]]);
-    for (const status of ["pending", "failed", "dead", "resolved", "sent"]) {
+    reset(); pool = deliveryPool(delivery({ status: "dead", attempts: 5 }));
+    const dead = await hubDeliveryResolve(req(admin, { id: "42" }), ctx);
+    eq(dead.status ?? 200, 200); eq(dead.jsonBody.status, "resolved", "an obsolete dead delivery can be closed so it stops blocking the employee");
+    for (const status of ["pending", "failed", "resolved", "sent"]) {
       reset(); pool = deliveryPool(delivery({ status }));
       eq((await hubDeliveryResolve(req(admin, { id: "42" }), ctx)).status, 409, `resolve of ${status}`);
       eq(audits.length, 0);

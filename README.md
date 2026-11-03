@@ -16,7 +16,7 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `GET/POST /api/hub/nightly` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Run the nightly job on demand |
 | `PUT /api/hub/stores/{destination}/{store}/mode` body `{ "mode": "off" \| "shadow" \| "live" }` | `Employees.Summary.Write` | `Summary.Admin` | Switch a store's delivery mode for `clearview` or `rosnet` (upserts `ref.store_modes`, `changed_by` = caller). Returns the row. Audited (`write`, field `mode`), fail-closed. No app-only callers |
 | `POST /api/hub/deliveries/{id}/retry` | `Employees.Summary.Write` | `Summary.Admin` | Re-queue a `failed` or `dead` delivery: `pending`, next attempt now, attempts kept; any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
-| `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` delivery as `resolved` (sets `finished_utc`); any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
+| `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` or `dead` delivery as `resolved` (sets `finished_utc`); any other status → 409. A dead delivery blocks the employee's later ones until it is retried or resolved. Returns the delivery. Audited (`write`, field `status`), fail-closed |
 | `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
 | `GET/POST /api/hub/clearview/run` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Drain the Clearview delivery queue now (runs even when `CLEARVIEW_ENABLED` is off). Returns the run counts (`claimed`, `sent`, `shadow`, `unchanged`, `skipped`, `review`, `failed`, `dead`, `waiting`, `resolved`, `purged`, `queue`); 502 when the run failed (e.g. Clearview 401). Audited (`write`, field `deliveries`), fail-closed |
 | `POST /api/hub/clearview/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | `codes` (default): per organization key, Clearview's stores (paired on `tdlNumber` and written to `ref.destination_codes`), jobs, termination reasons and mandatory attributes, plus unpaired stores and stale mappings, as a report to fill `provisioning/17`. `employees`: seeds `xref.employees` (`source = extract`) from Clearview's employee list by employee number + last name. 409 while `CLEARVIEW_ENABLED` is not `true` (the first Clearview call starts billing). Audited (`write`), fail-closed |
@@ -138,8 +138,8 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `13-delivery-tables.sql` | Delivery design tables: `ref.destination_events` (seeded), `ref.destination_codes`, `ref.store_modes` (no row = off), `out.deliveries`, `out.last_sent`, `out.shadow_payloads`, `xref.employees` (never purged) |
 | `14-check-deliveries.sql` | Dry run of the delivery queue for one store in shadow, rolled back; a second rebuild must queue nothing |
 | `15-admin-endpoint-grants.sql` | Grants the Function App user INSERT/UPDATE on `ref.store_modes` and UPDATE on `out.deliveries` for the admin endpoints (store mode, retry, resolve). Without it they return 503 |
-| `16-connector-grants-and-columns.sql` | Clearview connector: grants to `mi-func-hrint` on `out.last_sent`, `out.shadow_payloads`, `xref.employees`, `ref.destination_codes`, `stage.sync_runs` and SELECT on the tables it reads; adds `out.deliveries.response_ref`, the `waiting` / `skipped` statuses, `ref.destination_codes.destination_id` and the `category` / `company` code types. Run before the first connector run; the Diagnostics tab's grants check lists what is missing |
-| `17-destination-codes-clearview.sql` | Re-runnable MERGE template for the job / termination / category / company pairs a person decides. Fill its VALUES block from the `discover` report (stores are paired automatically by `discover`, not here) |
+| `16-connector-grants-and-columns.sql` | Clearview connector: grants to `mi-func-hrint` on `out.last_sent`, `out.shadow_payloads`, `xref.employees`, `ref.destination_codes`, `stage.sync_runs` and SELECT on the tables it reads; adds `out.deliveries.response_ref`, the `waiting` / `skipped` statuses, `ref.destination_codes.destination_id`, the `category` / `company` code types and the `company` column (primary key becomes destination, code_type, company, ukg_code). Run before the first connector run; the Diagnostics tab's grants check lists what is missing |
+| `17-destination-codes-clearview.sql` | Re-runnable MERGE template for the job / termination / category / company pairs a person decides, one row per organization (`company` = `SWN6T` or `SWNGK`; empty = shared). Fill its VALUES block from the `discover` report (stores are paired automatically by `discover`, not here) |
 
 13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
 is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
@@ -169,7 +169,7 @@ sequence (the pure mapper), hash it → shadow or live (below) → afterwards `r
 
 **Shadow vs live.** A delivery is sent only when its store is `live` in `ref.store_modes` **and** `CLEARVIEW_LIVE_ENABLED` = `true`
 **and** the employee's company has a key; otherwise it runs as shadow (one warning per run says why). Shadow builds the exact
-request, stores a masked copy in `out.shadow_payloads` (DOB `****-**-**`, SIN `*********`, pay `***`; Clearview ids it would look
+request, stores a masked copy in `out.shadow_payloads` (DOB `****-**-**`, SIN `*********`, email `***@***`, pay `***`; Clearview ids it would look
 up appear as `$lookup:…`) and marks the delivery `shadow`, so unmapped codes, missing SINs and bad dates surface before anything is
 sent. Live checks the payload hash against `out.last_sent` (`unchanged` when equal), GETs before every write (an assignment, job or
 termination that is already there is not sent twice), sends, then records `last_sent`, `response_ref` and any Clearview id learned
@@ -181,18 +181,24 @@ employee Flexspring never created); retried hourly without counting an attempt, 
 (network, timeout, 429, 5xx) retry after 5 min, 30 min, 2 h, 12 h, then `dead` (`[delivery] dead: destination=clearview
 delivery_id=… employee=… attempts=5`); 400 / 422 and mapping or validation errors are `dead` at once with Clearview's message in
 `last_error` (never values); 401 / 403 abort the run and leave every row untouched. A failed, waiting or dead delivery holds that
-employee's later ones until it is resolved. Transfers to a non-store (OPS, FIN …) and `M9WOJ` events become `review`.
+employee's later ones until it is retried or resolved (`POST /api/hub/deliveries/{id}/resolve` closes a `dead` one too). A claim
+also marks `superseded` any pending / failed / waiting row that a newer version of the same event has replaced (the event rebuild
+does this for pending and failed, never for waiting). Transfers to a non-store (OPS, FIN …) and `M9WOJ` events become `review`.
 
 **Per action.** `create` is an **import** (`POST /employee/import` into Clearview's staging area, Flexspring's proven minimum plus
 `preferredFirstName` and `externalId` = UKG employee ID; Payroll adds the employee, no `xref` until then) when Clearview has no
 record of the employee, and a **rehire** (`PUT /employeeStatus/{id}/rehire`) when it has (`xref` present), whatever the event type.
 `terminate` sends `{terminationDate, terminationReasonId}` (reason 13078 unless the category is mapped). `store` adds the store
-assignment, ends the previous one the day before on a store transfer, and tries to patch the reporting store (unverified, warning
-only if refused). `job` promotes the target job (or adds it at the current primary rate) and demotes the old primary. `pay` posts
+assignment, on a store transfer ends only the open assignment of the store the employee left (`from_store`; other open assignments
+stay, a missing one is a warning) the day before, and tries to patch the reporting store (unverified, warning only if refused).
+`job` promotes the target job (or adds it at the current primary rate and pay type, `salaryHours` 40 when salaried) and demotes
+the old primary. `pay` posts
 the flat v2 body `{effectiveDate, payTypeCode, payRate, salaryHours}` on the primary job. `update` patches `empCatCode`.
 
 **Mapping discovery.** Codes live in `ref.destination_codes` (`destination_code` = what Clearview calls it, `destination_id` = its
-internal id). `POST /api/hub/clearview/discover` reads every organization and pairs stores automatically on **`tdlNumber`**: the hub
+internal id, `company` = the UKG company whose Clearview organization the row belongs to, empty = shared). Job codes, job ids and
+termination reason ids differ per organization, so those rows are per company; stores and the company rows are shared. The mapper
+looks up the employee's company first, then the shared row. `POST /api/hub/clearview/discover` reads every organization and pairs stores automatically on **`tdlNumber`**: the hub
 store code's digits (`T22446` → `22446`) equal the TDL number without its leading 1 (`122446`); the UKG code is never turned into
 a Clearview number by rule, because UKG could not hold six digits. Paired stores and the `company` → `organizationId` rows are
 written; jobs (`jobCode`, org `jobId`, name) and termination reasons are listed for a person to pair in `provisioning/17`; unpaired
@@ -231,8 +237,9 @@ replacing that one class; the write calls and the New Hires lookups stay as they
 
 **To confirm in UAT before live** (the shadow build makes none of these a blocker):
 1. The import flow: does `externalId` survive Import → Payroll adding the employee, and is our employee number kept as
-   `employeeNumber`? (Decides how created ids resolve; the fallback is employee number + last name.) Also the rehire body's field
-   names: the v2 schema says `jobKey` / `primaryJobFlag` (what the connector sends), the swagger example says `jobId` / `primaryJob`.
+   `employeeNumber`? (Decides how created ids resolve; the fallback is employee number + last name.) The rehire body uses
+   `jobs[{jobId, payTypeCode, payRate, primaryJob, salaryHours}]` and `storeAssignments[{storeId, employeeNameOnRegister,
+   employeeIdOnRegister}]` as Clearview documents; confirm with one UAT rehire.
 2. Reporting store on a transfer: is `reportingStoreId` patchable? The connector tries `PATCH /employee/{id}` and records a warning
    on the delivery if Clearview refuses it.
 3. Required attributes and category codes: `filecontrol?requiredAttributesOnly=true` per organization (listed by `discover`),

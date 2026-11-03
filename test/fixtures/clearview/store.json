@@ -11,7 +11,7 @@
     "lastStepPath": "/employee/55501",
     "payload": {
       "assignment": { "storeId": 2283, "startDate": "2026-11-03", "nameOnRegister": "Annie Example" },
-      "endPrevious": { "assignmentId": "$lookup:previousAssignmentId", "endDate": "2026-11-02" },
+      "endPrevious": { "fromStore": "T02462", "storeId": 18, "storeNumber": 2462, "assignmentId": "$lookup:previousAssignmentId", "endDate": "2026-11-02" },
       "reportingStoreId": 2283
     }
   }

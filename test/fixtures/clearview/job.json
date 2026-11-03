@@ -10,7 +10,7 @@
     "stepMethods": ["GET", "PUT", "POST", "PUT"],
     "lastStepPath": "/employeeJob/55501/job/$lookup:primaryJobId",
     "payload": {
-      "add": { "jobCode": 10, "jobStatus": "A", "primaryJob": true, "payRate": "$lookup:currentPrimaryRate", "effectiveDate": "2026-11-01" },
+      "add": { "jobCode": 10, "jobStatus": "A", "primaryJob": true, "payTypeCode": "$lookup:currentPrimaryPayType", "payRate": "$lookup:currentPrimaryRate", "effectiveDate": "2026-11-01" },
       "promote": { "jobId": 9444, "primaryJob": true, "jobStatus": "A" },
       "demote": { "jobId": "$lookup:primaryJobId", "primaryJob": false, "jobStatus": "I" }
     }

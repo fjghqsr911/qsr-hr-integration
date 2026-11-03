@@ -16,7 +16,7 @@ import { ClearviewApiReads, ClearviewReads } from "./connector";
 export interface DiscoveryStore {
   hubStores(): Promise<string[]>;
   allCodes(): Promise<CodeMaps>;
-  upsertCodes(rows: { codeType: CodeType; ukgCode: string; destinationCode: string; destinationId: string | null; notes: string | null }[]): Promise<void>;
+  upsertCodes(rows: { codeType: CodeType; company: string; ukgCode: string; destinationCode: string; destinationId: string | null; notes: string | null }[]): Promise<void>;
   employeesWithoutXref(): Promise<{ employeeId: string; companyId: string; employeeNumber: string | null; lastName: string | null }[]>;
   upsertXrefMany(rows: { employeeId: string; externalId: string; source: "extract" }[]): Promise<void>;
 }
@@ -33,7 +33,7 @@ export interface DiscoverReport {
   what: "codes" | "employees";
   organizations: OrganizationReport[];
   stores: { paired: number; written: number; unpairedHub: string[]; unpairedClearview: { company: string; storeId: number; storeNumber: number; tdlNumber: string | null; name: string }[] };
-  staleMappings: { codeType: string; ukgCode: string; destinationCode: string; destinationId: string | null }[];
+  staleMappings: { codeType: string; company: string; ukgCode: string; destinationCode: string; destinationId: string | null }[];
   employees?: { clearview: number; hubWithoutXref: number; matched: number; lastNameMismatch: number; unmatchedHub: number };
 }
 
@@ -73,7 +73,7 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
           if (hub) paired.set(hub, { company, storeId: Number(s.storeId), storeNumber: Number(s.storeNumber), name: String(s.name ?? ""), tdl: String(tdl), org: org.organizationId });
           else report.stores.unpairedClearview.push({ company, storeId: Number(s.storeId), storeNumber: Number(s.storeNumber), tdlNumber: tdl ? String(tdl) : null, name: String(s.name ?? "") });
         }
-        if (org.organizationId) codeRows.push({ codeType: "company", ukgCode: company, destinationCode: String(org.organizationId), destinationId: null,
+        if (org.organizationId) codeRows.push({ codeType: "company", company: "", ukgCode: company, destinationCode: String(org.organizationId), destinationId: null,
                                                 notes: [org.employerCode ? `employerCode ${org.employerCode}` : null, org.name].filter(Boolean).join(" · ").slice(0, 200) || null });
         const jobs: any[] = (await client.get(company, "/job", { includeInactiveJobs: false })) ?? [];
         for (const j of jobs) {
@@ -93,7 +93,7 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
 
   if (what === "codes") {
     for (const [hub, p] of paired) {
-      codeRows.push({ codeType: "store", ukgCode: hub, destinationCode: String(p.storeNumber), destinationId: String(p.storeId),
+      codeRows.push({ codeType: "store", company: "", ukgCode: hub, destinationCode: String(p.storeNumber), destinationId: String(p.storeId),
                       notes: `org ${p.org ?? "?"} · tdl ${p.tdl} · ${p.name}`.slice(0, 200) });
     }
     report.stores.paired = paired.size;
@@ -105,9 +105,11 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
     const existing = await store.allCodes();
     const anyOrg = report.organizations.some(o => !o.error);
     if (anyOrg) {
-      for (const [ukg, m] of existing.job) if (!knownJobIds.has(String(m.destinationId ?? "")) && !knownJobCodes.has(m.destinationCode)) report.staleMappings.push({ codeType: "job", ukgCode: ukg, destinationCode: m.destinationCode, destinationId: m.destinationId });
-      for (const [ukg, m] of existing.termination) if (!knownReasonIds.has(String(m.destinationId ?? m.destinationCode))) report.staleMappings.push({ codeType: "termination", ukgCode: ukg, destinationCode: m.destinationCode, destinationId: m.destinationId });
-      for (const [ukg, m] of existing.store) if (m.destinationId && !knownStoreIds.has(m.destinationId)) report.staleMappings.push({ codeType: "store", ukgCode: ukg, destinationCode: m.destinationCode, destinationId: m.destinationId });
+      const stale = (codeType: string, m: { ukgCode: string; company: string; destinationCode: string; destinationId: string | null }) =>
+        report.staleMappings.push({ codeType, company: m.company, ukgCode: m.ukgCode, destinationCode: m.destinationCode, destinationId: m.destinationId });
+      for (const m of existing.job.values()) if (!knownJobIds.has(String(m.destinationId ?? "")) && !knownJobCodes.has(m.destinationCode)) stale("job", m);
+      for (const m of existing.termination.values()) if (!knownReasonIds.has(String(m.destinationId ?? m.destinationCode))) stale("termination", m);
+      for (const m of existing.store.values()) if (m.destinationId && !knownStoreIds.has(m.destinationId)) stale("store", m);
     }
     return report;
   }
