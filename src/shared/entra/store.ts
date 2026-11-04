@@ -35,6 +35,21 @@ UPDATE entra.proposals SET status = 'rejected', decided_by = @by, decided_utc = 
 OUTPUT ${INSERTED}
 WHERE proposal_id = @id AND (status IN ('proposed', 'accepted') OR ${STUCK_SQL});`;
 
+/** accepted -> proposed: the acceptance is undone and nothing is recorded (the row simply waits for a decision again). */
+export const PROPOSAL_WITHDRAW_SQL = `
+UPDATE entra.proposals SET status = 'proposed', decided_by = NULL, decided_utc = NULL, error = NULL
+OUTPUT ${INSERTED}
+WHERE proposal_id = @id AND status = 'accepted';`;
+
+/** rejected -> proposed and the rejection of this proposal / its hash goes, in one batch. No row when an open twin already carries the
+ *  hash (the filtered unique index would refuse a second open row): the caller answers 409 open_twin. */
+export const PROPOSAL_RECONSIDER_SQL = `
+DELETE FROM entra.rejections WHERE proposal_id = @id OR dedupe_hash = (SELECT dedupe_hash FROM entra.proposals WHERE proposal_id = @id);
+UPDATE entra.proposals SET status = 'proposed', decided_by = NULL, decided_utc = NULL, error = NULL
+OUTPUT ${INSERTED}
+WHERE proposal_id = @id AND status = 'rejected'
+  AND NOT EXISTS (SELECT 1 FROM entra.proposals o WHERE o.dedupe_hash = entra.proposals.dedupe_hash AND o.status IN (${OPEN_STATUS_LIST}));`;
+
 /** accepted (or stuck applying) -> applying, only when due; the claim is stamped so a stuck row can be told from a live one. */
 export const PROPOSAL_CLAIM_SQL = `
 UPDATE entra.proposals SET status = 'applying', error = NULL, last_seen_utc = SYSUTCDATETIME()
@@ -403,6 +418,10 @@ export class SqlEntraStore implements EntraStore {
     if (row) await this.pool.request().input("hash", sql.Char(64), row.dedupeHash).input("proposalId", sql.BigInt, row.proposalId).input("by", sql.NVarChar(200), by).query(REJECTION_UPSERT_SQL);
     return row;
   }
+  /** accepted -> proposed; null when the row is not accepted. Nothing is recorded (the audit names who). */
+  async withdraw(id: number, _by: string): Promise<ProposalRow | null> { return this.first(await this.byId(id).query(PROPOSAL_WITHDRAW_SQL)); }
+  /** rejected -> proposed, rejection rows deleted; null when the row is not rejected or an open twin carries the hash. */
+  async reconsider(id: number, _by: string): Promise<ProposalRow | null> { return this.first(await this.byId(id).query(PROPOSAL_RECONSIDER_SQL)); }
   /** accepted -> applying when due; null when the row is not accepted or not yet due. */
   async claim(id: number, today: string): Promise<ProposalRow | null> { return this.first(await this.byId(id).input("today", sql.Date, today).query(PROPOSAL_CLAIM_SQL)); }
   async finish(id: number, status: "applied" | "failed" | "stale", currentValue: string | null, error: string | null): Promise<ProposalRow | null> {

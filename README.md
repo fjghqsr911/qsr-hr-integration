@@ -24,6 +24,8 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `POST /api/hub/entra/sync` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Entra.Admin` | Run the [Entra sync](#entra-sync) now (snapshot, link, compare; never writes to Entra). Returns the run counts; 409 while another run holds the lock, 502 when the run failed. Audited (`write`, field `proposals`), fail-closed |
 | `POST /api/hub/entra/proposals/{id}/accept` | `Employees.Summary.Write` | `Entra.Admin` | `proposed` -> `accepted`, then applied at once (`applyOutcome` = `applied` / `failed` / `stale`) unless the proposal is due later (`due_later`, e.g. a disable on the date last worked) or `ENTRA_WRITE_ENABLED` is off (`writes_disabled`: the acceptance is still recorded). Returns the proposal; any other status -> 409. Audited (`write`, the field or kind), fail-closed |
 | `POST /api/hub/entra/proposals/{id}/reject` | `Employees.Summary.Write` | `Entra.Admin` | `proposed` / `accepted` -> `rejected` and a rejection row: the identical change is not proposed again until the difference disappears. 409 otherwise. Audited |
+| `POST /api/hub/entra/proposals/{id}/withdraw` | `Employees.Summary.Write` | `Entra.Admin` | `accepted` -> `proposed`: the acceptance is undone (`decidedBy` / `decidedUtc` cleared) and nothing is recorded, so the change waits for a decision again. 409 on any other status. Audited |
+| `POST /api/hub/entra/proposals/{id}/reconsider` | `Employees.Summary.Write` | `Entra.Admin` | `rejected` -> `proposed` and the rejection row is deleted, so the change is back in the queue. 409 on any other status; 409 `open_twin` when an open proposal already carries the same change (the row stays `rejected`). Audited |
 | `POST /api/hub/entra/proposals/{id}/apply` | `Employees.Summary.Write` | `Entra.Admin` | `accepted` -> `applying` -> `applied` / `failed` (502, Graph status + code in `error`) / `stale` (Entra no longer holds the value the proposal was built on). 409 before the due date, 409 `writes_disabled` unless `ENTRA_WRITE_ENABLED` = `true`, 409 on any other status. Audited BEFORE the Graph write |
 | `POST /api/hub/entra/proposals/decide` body `{ "ids": [..], "action": "accept" \| "reject" }` | `Employees.Summary.Write` | `Entra.Admin` | Bulk accept (same rules as above, applied at once when possible) or reject; at most `ENTRA_MAX_DECIDE` ids; `results[]` with one `outcome` per id (`applied`, `accepted`, `due_later`, `writes_disabled`, `failed`, `stale`, `rejected`, `conflict`, `not_found`). One audit record per id |
 | `POST` / `DELETE /api/hub/entra/groups/{gid}/members` body `{ "employeeIds": [..] }` | `Employees.Summary.Write` | `Entra.Admin` | Add / remove linked employees to a **managed** group now (Graph write per employee, recorded as `manual` proposals in status `applied`); unlinked employees and existing / non-members are skipped (`results[].outcome`). 409 `group_not_manageable` (not managed, dynamic or role-assignable), 409 `writes_disabled`, 404 unknown group. One audit record per employee written |
@@ -127,7 +129,7 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 
 ## Audit log
 
-Sensitive reads, SIN reveals, and writes (store mode, delivery retry / resolve, Clearview run / discover, every Entra action: sync, accept / reject / apply,
+Sensitive reads, SIN reveals, and writes (store mode, delivery retry / resolve, Clearview run / discover, every Entra action: sync, accept / reject / withdraw / reconsider / apply,
 group members, managed flag, rules, links) are recorded in Table Storage `AccessAudit`:
 who, which app, which employee, which **field names**, action, outcome, time — never values.
 Partition = `yyyyMM`; rows sort newest first. If the audit write fails, **no data is returned**.
@@ -297,6 +299,10 @@ Graph write happens through this Function App's managed identity, audited before
    `dedupe_hash` = sha256(employee | kind | field | group | value) (filtered unique index), so a repeat run refreshes `last_seen_utc` instead of
    duplicating; a difference that disappeared stales the open row; a `rejected` hash is suppressed until the difference disappears, then the rejection
    is deleted so a later recurrence is proposed again.
+
+**Changing a decision**: **Withdraw** (`accepted` -> `proposed`) only undoes the acceptance and records nothing, so the change stays in the queue;
+**Reject** records the hash in `entra.rejections` and suppresses the change until the facts behind it change; **Reconsider** (`rejected` -> `proposed`)
+undoes a rejection by deleting that row (409 `open_twin` when a newer open proposal already carries the same change).
 
 **Statuses**: `proposed` -> `accepted` -> `applying` -> `applied` | `failed` | `stale`; `rejected`; `blocked` (on-prem synced account). A termination
 proposal stays `accepted` until its due date (Toronto); the monitor shows it as due from that day and an admin applies it (never the timer).

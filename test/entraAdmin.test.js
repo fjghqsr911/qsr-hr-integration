@@ -35,7 +35,7 @@ module.exports = async () => {
   const UID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", UID2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", UID3 = "cccccccc-cccc-cccc-cccc-cccccccccccc";
   let db;
   const newDb = () => ({
-    proposals: new Map(), links: new Map(), users: new Map(), groups: new Map(), members: new Set(), rules: new Map(), rejections: [], manual: [], userUpdates: [], nextRule: 10, nextProposal: 500,
+    proposals: new Map(), links: new Map(), users: new Map(), groups: new Map(), members: new Set(), rules: new Map(), rejections: [], rejectionDeletes: [], manual: [], userUpdates: [], nextRule: 10, nextProposal: 500,
     directory: new Set(["E100", "E200", "E300"])
   });
   const proposal = (id, over = {}) => ({ proposal_id: id, employee_id: "E100", user_object_id: UID, kind: "attribute", field: "jobTitle", group_id: null, current_value: "Manager",
@@ -58,6 +58,13 @@ module.exports = async () => {
     if (same(t, S.PROPOSAL_CLAIM_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && (p.status === "accepted" || stuck(p)) && (!p.due_date || p.due_date <= inputs.today)) { p.status = "applying"; p.error = null; p.last_seen_utc = new Date(); return rs(p); } return rs(); }
     if (same(t, S.PROPOSAL_FINISH_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "applying") { p.status = inputs.status; if (inputs.currentValue !== null && inputs.currentValue !== undefined) p.current_value = inputs.currentValue; p.error = inputs.error; if (inputs.status === "applied") p.applied_utc = new Date(); return rs(p); } return rs(); }
     if (same(t, S.REJECTION_UPSERT_SQL)) { db.rejections.push(inputs.hash); return rs(); }
+    if (same(t, S.PROPOSAL_WITHDRAW_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "accepted") { Object.assign(p, { status: "proposed", decided_by: null, decided_utc: null, error: null }); return rs(p); } return rs(); }
+    if (same(t, S.PROPOSAL_RECONSIDER_SQL)) {                                 // one batch: the rejection goes first, the UPDATE only without an open twin
+      const p = db.proposals.get(Number(inputs.id)); db.rejectionDeletes.push(Number(inputs.id));
+      if (p) db.rejections = db.rejections.filter(h => h !== p.dedupe_hash.toString("hex"));
+      const twin = p && [...db.proposals.values()].some(o => o !== p && o.dedupe_hash.equals(p.dedupe_hash) && ["proposed", "accepted", "applying", "blocked"].includes(o.status));
+      if (p && p.status === "rejected" && !twin) { Object.assign(p, { status: "proposed", decided_by: null, decided_utc: null, error: null }); return rs(p); } return rs();
+    }
     if (same(t, S.MANUAL_APPLIED_SQL)) { const row = proposal(db.nextProposal++, { employee_id: inputs.employeeId, user_object_id: inputs.userObjectId, kind: inputs.kind, field: null, group_id: inputs.groupId, current_value: null, proposed_value: null, source: "manual", status: "applied", dedupe_hash: Buffer.from(inputs.hash, "hex"), decided_by: inputs.by, applied_utc: new Date() }); db.manual.push(row); return rs(row); }
     if (same(t, S.STALE_BY_HASH_SQL)) { let n = 0; for (const p of db.proposals.values()) if (p.dedupe_hash.toString("hex") === inputs.hash && Number(p.proposal_id) !== Number(inputs.exceptId) && ["proposed", "accepted", "blocked"].includes(p.status)) { p.status = "stale"; n++; } return rs({ staled: n }); }
     if (same(t, S.DIRECTORY_ROW_SQL)) return rs(db.directory.has(inputs.employeeId) ? { employee_id: inputs.employeeId, employee_status: "A", work_email: null } : null);
@@ -105,6 +112,7 @@ module.exports = async () => {
   const restore = () => { if (saved.w === undefined) delete process.env.ENTRA_WRITE_ENABLED; else process.env.ENTRA_WRITE_ENABLED = saved.w; if (saved.m === undefined) delete process.env.ENTRA_MAX_DECIDE; else process.env.ENTRA_MAX_DECIDE = saved.m; };
   const ALL = [
     ["accept", A.entraProposalAccept, { id: "1" }, undefined], ["reject", A.entraProposalReject, { id: "1" }, undefined], ["apply", A.entraProposalApply, { id: "1" }, undefined],
+    ["withdraw", A.entraProposalWithdraw, { id: "1" }, undefined], ["reconsider", A.entraProposalReconsider, { id: "1" }, undefined],
     ["decide", A.entraProposalsDecide, {}, { ids: [1], action: "accept" }], ["members add", A.entraGroupMembersAdd, { gid: GID }, { employeeIds: ["E100"] }],
     ["members remove", A.entraGroupMembersRemove, { gid: GID }, { employeeIds: ["E100"] }], ["managed", A.entraGroupManaged, { gid: GID }, { managed: true }],
     ["rule create", A.entraRuleSave, {}, { groupId: GID, name: "x" }], ["rule update", A.entraRuleSave, { id: "10" }, { groupId: GID, name: "x" }], ["rule delete", A.entraRuleDelete, { id: "10" }, undefined],
@@ -124,7 +132,7 @@ module.exports = async () => {
     });
     await test("entra admin: id / guid / employee id / body validation -> 400 before any SQL", async () => {
       reset();
-      for (const fn of [A.entraProposalAccept, A.entraProposalReject, A.entraProposalApply]) {
+      for (const fn of [A.entraProposalAccept, A.entraProposalReject, A.entraProposalApply, A.entraProposalWithdraw, A.entraProposalReconsider]) {
         eq((await fn(req(admin, { id: "1; drop" }), ctx)).status, 400); eq((await fn(req(admin, { id: "" }), ctx)).status, 400); eq((await fn(req(admin, { id: "1234567890123456" }), ctx)).status, 400);
       }
       eq((await A.entraProposalsDecide(req(admin, {}, "bad-json"), ctx)).status, 400);
@@ -191,6 +199,52 @@ module.exports = async () => {
       reset(); db.proposals.set(1, proposal(1, { status: "accepted" }));
       res = await A.entraProposalReject(req(admin, { id: "1" }), ctx); eq(res.jsonBody.status, "rejected");
       assert(/status IN \('proposed', 'accepted'\)/.test(S.PROPOSAL_REJECT_SQL));
+    });
+    await test("withdraw: accepted -> proposed with the decision cleared, audited BEFORE the write; no rejection row, no Graph call", async () => {
+      reset(); db.proposals.set(1, proposal(1, { status: "accepted", decided_by: "delegated:fraser@qsrgroup.ca", decided_utc: new Date(), error: "old" }));
+      const res = await A.entraProposalWithdraw(req(admin, { id: "1" }), ctx);
+      eq(res.status, 200); eq(res.headers["Cache-Control"], "no-store");
+      eq([res.jsonBody.proposalId, res.jsonBody.status, res.jsonBody.applyOutcome, res.jsonBody.decidedBy, res.jsonBody.decidedUtc, res.jsonBody.error], [1, "proposed", null, null, null, null]);
+      assert(!("dedupeHash" in res.jsonBody), "hash not returned");
+      eq(db.rejections, []); eq(db.rejectionDeletes, []); eq(graphCalls, []);
+      assert(!pool.calls.some(c => same(c.text, S.REJECTION_UPSERT_SQL)), "no rejection SQL");
+      eq(audits.length, 1); eq([audits[0].endpoint, audits[0].employeeId, audits[0].action, audits[0].fields, audits[0].outcome], ["POST /hub/entra/proposals/{id}/withdraw", "E100", "write", ["jobTitle"], "allowed"]);
+      assert(pool.calls.findIndex(c => same(c.text, S.PROPOSAL_WITHDRAW_SQL)) > 0, "the withdraw UPDATE runs after the audit");
+      assert(/SET status = 'proposed', decided_by = NULL, decided_utc = NULL, error = NULL/.test(S.PROPOSAL_WITHDRAW_SQL) && /WHERE proposal_id = @id AND status = 'accepted';$/.test(S.PROPOSAL_WITHDRAW_SQL.trim()), "status-guarded UPDATE");
+      assert(!/rejections/.test(S.PROPOSAL_WITHDRAW_SQL), "withdraw never touches entra.rejections");
+    });
+    await test("withdraw: proposed / applied / rejected / applying -> 409 with the current status, nothing audited, nothing written", async () => {
+      for (const status of ["proposed", "applied", "rejected", "applying", "stale"]) {
+        reset(); db.proposals.set(1, proposal(1, { status, last_seen_utc: new Date() }));
+        const res = await A.entraProposalWithdraw(req(admin, { id: "1" }), ctx);
+        eq(res.status, 409, `withdraw of ${status}`); eq(res.jsonBody.status, status); assert(/withdraw needs accepted/.test(res.jsonBody.error));
+        eq(audits.length, 0); eq(graphCalls, []); eq(pool.calls.length, 1, "read only"); eq(db.proposals.get(1).status, status);
+      }
+    });
+    await test("reconsider: rejected -> proposed and the rejection rows of the proposal / its hash deleted in the same batch; audited BEFORE", async () => {
+      reset(); const hash = dedupeHash("E100", "attribute", "jobTitle", null, "General Manager");
+      db.proposals.set(1, proposal(1, { status: "rejected", decided_by: "delegated:fraser@qsrgroup.ca", decided_utc: new Date() })); db.rejections.push(hash);
+      const res = await A.entraProposalReconsider(req(admin, { id: "1" }), ctx);
+      eq(res.status, 200);
+      eq([res.jsonBody.proposalId, res.jsonBody.status, res.jsonBody.applyOutcome, res.jsonBody.decidedBy, res.jsonBody.decidedUtc, res.jsonBody.error], [1, "proposed", null, null, null, null]);
+      eq(db.rejections, [], "the rejection row is gone"); eq(db.rejectionDeletes, [1]); eq(graphCalls, []);
+      eq(audits.length, 1); eq([audits[0].endpoint, audits[0].employeeId, audits[0].fields, audits[0].outcome], ["POST /hub/entra/proposals/{id}/reconsider", "E100", ["jobTitle"], "allowed"]);
+      assert(pool.calls.findIndex(c => same(c.text, S.PROPOSAL_RECONSIDER_SQL)) > 0, "the reconsider batch runs after the audit");
+      assert(/^DELETE FROM entra\.rejections WHERE proposal_id = @id OR dedupe_hash = \(SELECT dedupe_hash FROM entra\.proposals WHERE proposal_id = @id\);/.test(S.PROPOSAL_RECONSIDER_SQL.trim()), "the delete comes first");
+      assert(/SET status = 'proposed', decided_by = NULL, decided_utc = NULL, error = NULL/.test(S.PROPOSAL_RECONSIDER_SQL) && /WHERE proposal_id = @id AND status = 'rejected'/.test(S.PROPOSAL_RECONSIDER_SQL), "status-guarded UPDATE");
+      assert(/NOT EXISTS \(SELECT 1 FROM entra\.proposals o WHERE o\.dedupe_hash = entra\.proposals\.dedupe_hash AND o\.status IN \('proposed', 'accepted', 'applying', 'blocked'\)\)/.test(S.PROPOSAL_RECONSIDER_SQL), "no second open row for the hash");
+    });
+    await test("reconsider: proposed / accepted / applied -> 409 (not audited); an open twin with the same hash -> 409 open_twin with the current status, audited", async () => {
+      for (const status of ["proposed", "accepted", "applied", "stale"]) {
+        reset(); db.proposals.set(1, proposal(1, { status }));
+        const res = await A.entraProposalReconsider(req(admin, { id: "1" }), ctx);
+        eq(res.status, 409, `reconsider of ${status}`); eq(res.jsonBody.status, status); assert(/reconsider needs rejected/.test(res.jsonBody.error));
+        eq(audits.length, 0); eq(pool.calls.length, 1, "read only"); eq(db.proposals.get(1).status, status);
+      }
+      reset(); db.proposals.set(1, proposal(1, { status: "rejected" })); db.proposals.set(2, proposal(2, { status: "proposed" }));     // same hash, open
+      const res = await A.entraProposalReconsider(req(admin, { id: "1" }), ctx);
+      eq(res.status, 409); eq([res.jsonBody.error, res.jsonBody.status], ["open_twin", "rejected"]);
+      eq(db.proposals.get(1).status, "rejected"); eq(db.proposals.get(2).status, "proposed"); eq(audits.length, 1); eq(graphCalls, []);
     });
     await test("apply: accepted -> applying -> applied; before the due date -> 409 (not audited); writes disabled -> 409 writes_disabled with no Graph call and no claim", async () => {
       reset(); db.proposals.set(1, proposal(1, { status: "accepted" }));
@@ -261,10 +315,11 @@ module.exports = async () => {
     });
     await test("audit failure -> 503 and nothing changes (accept, reject, apply, managed, rule, link, unlink); SQL failure -> 503 and pool reset", async () => {
       for (const [name, fn, params, body] of ALL.filter(([n]) => !["decide", "members add", "members remove"].includes(n))) {
-        reset(); auditFails = true; db.proposals.set(1, proposal(1, { status: name === "apply" ? "accepted" : "proposed" })); db.rules.set(10, ruleRow(10));
+        const status = { apply: "accepted", withdraw: "accepted", reconsider: "rejected" }[name] ?? "proposed";
+        reset(); auditFails = true; db.proposals.set(1, proposal(1, { status })); db.rules.set(10, ruleRow(10));
         const res = await fn(req(admin, params, body), ctx);
         eq(res.status, 503, `${name} audit down`); eq(graphCalls, [], `${name}: no Graph call`);
-        eq(db.proposals.get(1).status, name === "apply" ? "accepted" : "proposed", `${name}: proposal untouched`);
+        eq(db.proposals.get(1).status, status, `${name}: proposal untouched`); eq(db.rejectionDeletes, [], `${name}: no rejection deleted`);
         assert(db.rules.has(10) && db.links.has("E100") && !db.links.has("E300") && db.groups.get(GID).managed === true, `${name}: nothing changed`);
       }
       reset(); pool = fakePool(() => { throw new Error("db down"); });
