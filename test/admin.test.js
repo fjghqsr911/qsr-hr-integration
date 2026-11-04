@@ -10,7 +10,7 @@ module.exports = async () => {
   const realSql = require(path.join(DIST, "shared", "sql.js")).sql;
   stubModule("shared/sql.js", { getSharedHubPool: async () => pool, resetSharedHubPool() {}, openHubPool: async () => pool, sql: realSql });
   stubModule("shared/audit.js", { writeAudit: async (e) => { if (auditFails) throw new Error("down"); audits.push(e); } });
-  const { hubStoreMode, hubDeliveryRetry, hubDeliveryResolve, STORE_MODE_SQL, QUEUE_STORE_EVENTS_SQL, DELIVERY_RETRY_SQL, DELIVERY_RESOLVE_SQL } =
+  const { hubStoreMode, hubEventsQueue, hubDeliveryRetry, hubDeliveryResolve, STORE_MODE_SQL, QUEUE_EVENTS_LOOKUP_SQL, QUEUE_EVENTS_SQL, DELIVERY_RETRY_SQL, DELIVERY_RESOLVE_SQL } =
     require(path.join(DIST, "functions", "hubAdmin.js"));
 
   const principal = (claims) => Buffer.from(JSON.stringify({ claims })).toString("base64");
@@ -52,33 +52,18 @@ module.exports = async () => {
     eq((await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, "bad-json"), ctx)).status, 400);
     eq(pool.calls.length, 0); eq(audits.length, 0);
   });
-  await test("store mode: upserts with caller as changed_by, audits the write, queues recent events when asked, returns the row", async () => {
-    reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow({ mode: "live" })] } : { recordset: [{ queued: 3 }] }));
-    const res = await hubStoreMode(req(admin, { destination: "Clearview", store: "t01647" }, { mode: "LIVE", queueDays: 14 }), ctx);
+  await test("store mode: upserts with caller as changed_by, audits the write, returns the row (nothing queued on a switch)", async () => {
+    reset(); pool = fakePool(() => ({ recordset: [modeRow({ mode: "live" })] }));
+    const res = await hubStoreMode(req(admin, { destination: "Clearview", store: "t01647" }, { mode: "LIVE" }), ctx);
     eq(res.status ?? 200, 200);
-    eq(res.jsonBody, { destination: "clearview", store: "T01647", mode: "live", changedUtc: "2026-10-30T12:00:00.000Z", changedBy: "delegated:fraser@qsrgroup.ca", queued: 3, queueDays: 14 });
-    eq(pool.calls.length, 2); eq(pool.calls[0].text, STORE_MODE_SQL); eq(pool.calls[1].text, QUEUE_STORE_EVENTS_SQL);
+    eq(res.jsonBody, { destination: "clearview", store: "T01647", mode: "live", changedUtc: "2026-10-30T12:00:00.000Z", changedBy: "delegated:fraser@qsrgroup.ca" });
+    eq(pool.calls.length, 1, "the mode upsert is the only SQL: no backfill when a store is switched on"); eq(pool.calls[0].text, STORE_MODE_SQL);
     eq(pool.calls[0].inputs, { destination: "clearview", store: "T01647", mode: "live", changedBy: "delegated:fraser@qsrgroup.ca" });
-    eq([pool.calls[1].inputs.destination, pool.calls[1].inputs.store], ["clearview", "T01647"]);
-    const since = pool.calls[1].inputs.since; assert(since instanceof Date && Math.abs(Date.now() - 14 * 86_400_000 - since.getTime()) < 60_000, "since = now minus 14 days");
     assert(/SYSUTCDATETIME\(\)/.test(STORE_MODE_SQL) && /changed_by = @changedBy/.test(STORE_MODE_SQL));
-    assert(/rpt\.usp_queue_store_events/.test(QUEUE_STORE_EVENTS_SQL));
     eq(audits.length, 1);
     eq([audits[0].endpoint, audits[0].employeeId, audits[0].action, audits[0].fields, audits[0].outcome],
-       ["PUT /hub/stores/{destination}/{store}/mode", "", "write", ["mode", "queue"], "allowed"]);
+       ["PUT /hub/stores/{destination}/{store}/mode", "", "write", ["mode"], "allowed"]);
     eq(audits[0].caller.user, "fraser@qsrgroup.ca");
-  });
-  await test("store mode: no queueDays (the default) or mode off skips the queue; queueDays validated", async () => {
-    reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow()] } : { recordset: [{ queued: 9 }] }));
-    let res = await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "shadow" }), ctx);
-    eq(res.jsonBody.queued, 0); eq(res.jsonBody.queueDays, 0); eq(pool.calls.length, 1, "nothing queued unless asked"); eq(audits[0].fields, ["mode"]);
-    reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow({ mode: "off" })] } : { recordset: [{ queued: 9 }] }));
-    res = await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "off", queueDays: 30 }), ctx);
-    eq(res.jsonBody.queued, 0); eq(res.jsonBody.queueDays, 0); eq(pool.calls.length, 1);
-    reset(); pool = fakePool(() => ({ recordset: [modeRow()] }));
-    eq((await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "shadow", queueDays: 400 }), ctx)).status, 400);
-    eq((await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "shadow", queueDays: "14" }), ctx)).status, 400);
-    eq(pool.calls.length, 0);
   });
   await test("store mode: audit failure -> 503 and no SQL (fail closed)", async () => {
     reset(); auditFails = true; pool = fakePool(() => ({ recordset: [modeRow()] }));
@@ -89,6 +74,54 @@ module.exports = async () => {
     reset(); pool = fakePool(() => { throw new Error("db down"); });
     const res = await hubStoreMode(req(admin, { destination: "rosnet", store: "T00037" }, { mode: "off" }), ctx);
     eq(res.status, 503); eq(audits.map(a => a.outcome), ["allowed", "error"]);
+  });
+
+  // ------------------------------------------------------------ queue events by hand ------------------------------------------------------------
+  const queuePool = (outcomes) => fakePool((text) => text === QUEUE_EVENTS_LOOKUP_SQL
+    ? { recordset: [{ event_id: 54302, employee_id: "EWLUDV00WRY0" }, { event_id: 54307, employee_id: "EWLUDV00WRY0" }, { event_id: 100, employee_id: "E100" }] }
+    : { recordset: outcomes });
+  const outcomes = [{ event_id: 100, outcome: "store_off", delivery_id: null }, { event_id: 54302, outcome: "queued", delivery_id: 901 }, { event_id: 54307, outcome: "exists", delivery_id: null }, { event_id: 999, outcome: "not_found", delivery_id: null }];
+  await test("events queue: permissions (admin + write scope only; no app-only callers)", async () => {
+    reset(); pool = queuePool(outcomes);
+    const body = { destination: "clearview", eventIds: [54302] };
+    eq((await hubEventsQueue(req(null, {}, body), ctx)).status, 401);
+    eq((await hubEventsQueue(req(reader, {}, body), ctx)).jsonBody.detail, "insufficient_role");
+    eq((await hubEventsQueue(req(noWriteScope, {}, body), ctx)).jsonBody.detail, "insufficient_scope");
+    eq((await hubEventsQueue(req(appOnly, {}, body), ctx)).jsonBody.detail, "app_only_not_allowed");
+    eq(pool.calls.length, 0); eq(audits.length, 0);
+  });
+  await test("events queue: validation (destination, ids, count, json)", async () => {
+    reset(); pool = queuePool(outcomes);
+    eq((await hubEventsQueue(req(admin, {}, { destination: "sap", eventIds: [1] }), ctx)).status, 400);
+    eq((await hubEventsQueue(req(admin, {}, { destination: "clearview", eventIds: [] }), ctx)).status, 400);
+    eq((await hubEventsQueue(req(admin, {}, { destination: "clearview", eventIds: ["1;drop"] }), ctx)).status, 400);
+    eq((await hubEventsQueue(req(admin, {}, { destination: "clearview", eventIds: Array.from({ length: 201 }, (_, i) => i + 1) }), ctx)).status, 400);
+    eq((await hubEventsQueue(req(admin, {}, "bad-json"), ctx)).status, 400);
+    eq(pool.calls.length, 0); eq(audits.length, 0);
+  });
+  await test("events queue: looks up employees, audits each known event before queueing, maps the per-id outcomes", async () => {
+    reset(); pool = queuePool(outcomes);
+    const res = await hubEventsQueue(req(admin, {}, { destination: "Clearview", eventIds: ["54302", 54307, 100, 999, 54302] }), ctx);
+    eq(res.status ?? 200, 200);
+    eq(res.jsonBody, { destination: "clearview", results: [
+      { eventId: 54302, employeeId: "EWLUDV00WRY0", outcome: "queued", deliveryId: 901 },
+      { eventId: 54307, employeeId: "EWLUDV00WRY0", outcome: "exists", deliveryId: null },
+      { eventId: 100, employeeId: "E100", outcome: "store_off", deliveryId: null },
+      { eventId: 999, employeeId: null, outcome: "not_found", deliveryId: null }] });
+    eq(pool.calls.length, 2); eq(pool.calls[0].text, QUEUE_EVENTS_LOOKUP_SQL); eq(pool.calls[1].text, QUEUE_EVENTS_SQL);
+    eq(JSON.parse(pool.calls[1].inputs.ids), [54302, 54307, 100, 999]); eq(pool.calls[1].inputs.destination, "clearview");
+    assert(/rpt\.usp_queue_events/.test(QUEUE_EVENTS_SQL));
+    eq(audits.length, 3, "one audit per known event, none for the unknown id");
+    eq(audits.map(a => a.employeeId), ["EWLUDV00WRY0", "EWLUDV00WRY0", "E100"]);
+    eq([audits[0].endpoint, audits[0].action, audits[0].fields, audits[0].outcome], ["POST /hub/events/queue", "write", ["queue", "clearview"], "allowed"]);
+  });
+  await test("events queue: audit failure -> 503 and nothing queued; SQL failure -> 503 with error audits", async () => {
+    reset(); auditFails = true; pool = queuePool(outcomes);
+    const res = await hubEventsQueue(req(admin, {}, { destination: "clearview", eventIds: [54302] }), ctx);
+    eq(res.status, 503); eq(pool.calls.length, 1, "lookup only: the queue procedure must not run when the audit cannot be written");
+    reset(); pool = fakePool((text) => { if (text === QUEUE_EVENTS_LOOKUP_SQL) return { recordset: [{ event_id: 54302, employee_id: "EWLUDV00WRY0" }] }; throw new Error("db down"); });
+    const res2 = await hubEventsQueue(req(admin, {}, { destination: "clearview", eventIds: [54302] }), ctx);
+    eq(res2.status, 503); eq(audits.map(a => a.outcome), ["allowed", "error"]);
   });
 
   // ------------------------------------------------------------ deliveries ------------------------------------------------------------

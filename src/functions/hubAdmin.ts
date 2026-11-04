@@ -28,14 +28,15 @@ WHEN NOT MATCHED THEN INSERT (destination, store, mode, changed_utc, changed_by)
                       VALUES (@destination, @store, @mode, SYSUTCDATETIME(), @changedBy)
 OUTPUT inserted.destination, inserted.store, inserted.mode, inserted.changed_utc, inserted.changed_by;`;
 
-/** Optional, on request only (queueDays > 0): when a store is switched on, queue its events entered in the last N days
- *  that were built while it was off (provisioning/22). Off by default: the outgoing integration still carries current
- *  changes, so switching a store on must not create a backlog. */
-export const QUEUE_STORE_EVENTS_SQL = `
-DECLARE @n int;
-EXEC @n = rpt.usp_queue_store_events @destination = @destination, @store = @store, @since = @since;
-SELECT @n AS queued;`;
-const QUEUE_DAYS_DEFAULT = 0, QUEUE_DAYS_MAX = 365;
+/** Manual queue (provisioning/22): a person picks events that have no delivery and queues them for a destination.
+ *  Events built while a store was off are never queued on their own (the outgoing integration carries current changes
+ *  until cutover), so this is the only way such an event reaches the hub queue. */
+export const QUEUE_EVENTS_LOOKUP_SQL = `
+SELECT event_id, employee_id FROM rpt.workforce_events WHERE event_id IN (SELECT TRY_CAST(value AS bigint) FROM OPENJSON(@ids));`;
+export const QUEUE_EVENTS_SQL = `EXEC rpt.usp_queue_events @destination = @destination, @event_ids = @ids;`;
+const QUEUE_MAX_IDS = 200;
+const EVENT_ID_PATTERN = /^\d{1,15}$/;
+const QUEUE_OUTCOMES = ["queued", "exists", "store_off", "not_taken", "not_found"] as const;
 
 const DELIVERY_COLUMNS = `delivery_id, destination, kind, employee_id, event_type, action, effective_date, store, status,
        attempts, next_attempt_utc, queued_utc, finished_utc, last_error`;
@@ -87,13 +88,9 @@ export async function hubStoreMode(req: HttpRequest, ctx: InvocationContext): Pr
   try { body = await req.json(); } catch { return { status: 400, jsonBody: { error: "Body must be JSON" } }; }
   const mode = typeof body?.mode === "string" ? body.mode.toLowerCase() : "";
   if (!(MODES as readonly string[]).includes(mode)) return { status: 400, jsonBody: { error: "mode must be off, shadow or live" } };
-  // queueDays: how far back to queue the store's existing events once it is on; default 0 = none. Ignored for off.
-  const queueDaysRaw = body?.queueDays === undefined || body?.queueDays === null ? QUEUE_DAYS_DEFAULT : body.queueDays;
-  if (!Number.isInteger(queueDaysRaw) || queueDaysRaw < 0 || queueDaysRaw > QUEUE_DAYS_MAX) return { status: 400, jsonBody: { error: `queueDays must be an integer from 0 to ${QUEUE_DAYS_MAX}` } };
-  const queueDays: number = mode === "off" ? 0 : queueDaysRaw;
 
-  ctx.log(`store-mode ${destination}/${store} -> ${mode} queueDays=${queueDays} by=${describeCaller(caller)}`);
-  const audit = { caller, endpoint: STORE_MODE_ENDPOINT, employeeId: "", action: "write" as const, fields: queueDays > 0 ? ["mode", "queue"] : ["mode"] };
+  ctx.log(`store-mode ${destination}/${store} -> ${mode} by=${describeCaller(caller)}`);
+  const audit = { caller, endpoint: STORE_MODE_ENDPOINT, employeeId: "", action: "write" as const, fields: ["mode"] };
 
   // Audit BEFORE changing anything. If this throws, nothing is written and the caller gets 503.
   try { await writeAudit({ ...audit, outcome: "allowed" }); }
@@ -109,19 +106,71 @@ export async function hubStoreMode(req: HttpRequest, ctx: InvocationContext): Pr
       .query(STORE_MODE_SQL);
     const row = result.recordset?.[0];
     if (!row) throw new Error("upsert returned no row");
-    let queued = 0;
-    if (queueDays > 0) {
-      const since = new Date(Date.now() - queueDays * 86_400_000);
-      const q: any = await pool.request().input("destination", sql.VarChar(20), destination).input("store", sql.VarChar(20), store)
-        .input("since", sql.DateTime2(0), since).query(QUEUE_STORE_EVENTS_SQL);
-      queued = Number(q.recordset?.[0]?.queued ?? 0);
-      ctx.log(`store-mode ${destination}/${store}: queued ${queued} event(s) entered since ${since.toISOString().slice(0, 10)}`);
-    }
-    return { headers: NO_STORE, jsonBody: { ...mapStoreModeRow(row), queued, queueDays } };
+    return { headers: NO_STORE, jsonBody: mapStoreModeRow(row) };
   } catch (e: any) {
     resetSharedHubPool();
     ctx.error(`store-mode failed ${destination}/${store}: ${String(e?.message ?? "error").slice(0, 200)}`);
     try { await writeAudit({ ...audit, outcome: "error" }); } catch { /* already failing */ }
+    return unavailable();
+  }
+}
+
+// ---------------------------------------------------------------- queue events by hand ----------------------------------------------------------------
+const QUEUE_EVENTS_ENDPOINT = "POST /hub/events/queue";
+
+/** POST /api/hub/events/queue { destination, eventIds: [...] }: queue the chosen events (no delivery yet, store on) as pending. */
+export async function hubEventsQueue(req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> {
+  const auth = authorize(req, { scope: Scopes.SummaryWrite, anyRole: [Roles.SummaryAdmin] });
+  if (!auth.ok) return auth.response!;
+  const caller = auth.caller!;
+
+  let body: any;
+  try { body = await req.json(); } catch { return { status: 400, jsonBody: { error: "Body must be JSON" } }; }
+  const destination = typeof body?.destination === "string" ? body.destination.toLowerCase() : "";
+  if (!(DESTINATIONS as readonly string[]).includes(destination)) return { status: 400, jsonBody: { error: "Invalid destination" } };
+  const ids = Array.isArray(body?.eventIds) ? body.eventIds : null;
+  if (!ids || ids.length === 0) return { status: 400, jsonBody: { error: "eventIds must be a non-empty array" } };
+  if (ids.length > QUEUE_MAX_IDS) return { status: 400, jsonBody: { error: `eventIds must hold at most ${QUEUE_MAX_IDS} entries` } };
+  if (!ids.every((v: unknown) => EVENT_ID_PATTERN.test(String(v)))) return { status: 400, jsonBody: { error: "Invalid event id" } };
+  const unique = [...new Set(ids.map((v: unknown) => Number(v)))] as number[];
+  const by = describeCaller(caller);
+  ctx.log(`events-queue ${destination} ids=${unique.length} by=${by}`);
+
+  let pool: sql.ConnectionPool;
+  let employeeOf: Map<number, string>;
+  try {
+    pool = await getSharedHubPool();
+    const lookup: any = await pool.request().input("ids", sql.NVarChar(sql.MAX), JSON.stringify(unique)).query(QUEUE_EVENTS_LOOKUP_SQL);
+    employeeOf = new Map((lookup.recordset ?? []).map((r: any) => [Number(r.event_id), String(r.employee_id)]));
+  } catch (e: any) {
+    resetSharedHubPool();
+    ctx.error(`events-queue lookup failed: ${String(e?.message ?? "error").slice(0, 200)}`);
+    return unavailable();
+  }
+
+  // One audit record per known event BEFORE anything is queued; if any cannot be written, nothing is queued.
+  const known = unique.filter(id => employeeOf.has(id));
+  try {
+    for (const id of known) await writeAudit({ caller, endpoint: QUEUE_EVENTS_ENDPOINT, employeeId: employeeOf.get(id)!, action: "write", fields: ["queue", destination], outcome: "allowed" });
+  } catch (e: any) {
+    ctx.error(`events-queue audit failed: ${String(e?.message ?? "error").slice(0, 200)}`);
+    return unavailable();
+  }
+
+  try {
+    const r: any = await pool.request().input("destination", sql.VarChar(20), destination).input("ids", sql.NVarChar(sql.MAX), JSON.stringify(unique)).query(QUEUE_EVENTS_SQL);
+    const byId = new Map<number, { outcome: string; deliveryId: number | null }>();
+    for (const row of r.recordset ?? []) {
+      const outcome = String(row.outcome);
+      byId.set(Number(row.event_id), { outcome: (QUEUE_OUTCOMES as readonly string[]).includes(outcome) ? outcome : "not_found", deliveryId: row.delivery_id === null || row.delivery_id === undefined ? null : Number(row.delivery_id) });
+    }
+    const results = unique.map(eventId => ({ eventId, employeeId: employeeOf.get(eventId) ?? null, ...(byId.get(eventId) ?? { outcome: "not_found", deliveryId: null }) }));
+    ctx.log(`events-queue ${destination}: ${results.filter(x => x.outcome === "queued").length} queued of ${unique.length}`);
+    return { headers: NO_STORE, jsonBody: { destination, results } };
+  } catch (e: any) {
+    resetSharedHubPool();
+    ctx.error(`events-queue failed: ${String(e?.message ?? "error").slice(0, 200)}`);
+    try { for (const id of known) await writeAudit({ caller, endpoint: QUEUE_EVENTS_ENDPOINT, employeeId: employeeOf.get(id)!, action: "write", fields: ["queue", destination], outcome: "error" }); } catch { /* already failing */ }
     return unavailable();
   }
 }
@@ -181,5 +230,6 @@ export const hubDeliveryRetry = (req: HttpRequest, ctx: InvocationContext) => de
 export const hubDeliveryResolve = (req: HttpRequest, ctx: InvocationContext) => deliveryTransition(req, ctx, RESOLVE);
 
 app.http("hubStoreMode", { methods: ["PUT"], authLevel: "anonymous", route: "hub/stores/{destination}/{store}/mode", handler: hubStoreMode });
+app.http("hubEventsQueue", { methods: ["POST"], authLevel: "anonymous", route: "hub/events/queue", handler: hubEventsQueue });
 app.http("hubDeliveryRetry", { methods: ["POST"], authLevel: "anonymous", route: "hub/deliveries/{id}/retry", handler: hubDeliveryRetry });
 app.http("hubDeliveryResolve", { methods: ["POST"], authLevel: "anonymous", route: "hub/deliveries/{id}/resolve", handler: hubDeliveryResolve });
