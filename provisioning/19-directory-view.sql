@@ -2,8 +2,9 @@
 -- Requires 18-ref-stores.sql. The view takes exactly one column from stage.employee_contact: work_email.
 -- The monitor database user is denied SELECT on stage.employee_contact; because the view and the table are both
 -- dbo-owned, the ownership chain lets the view be read while the table itself stays denied (personal email,
--- phones and birthdays never reach the monitor). Department is the store name, or Head Office for anyone whose
--- org_level2 is not a store (HR, FIN, OPS ...).
+-- phones and birthdays never reach the monitor). A store is any org_level2 shaped like a store code (a letter and
+-- four or more digits: T00037, W06302), whether or not ref.stores has a row for it yet; department is the store
+-- name (NULL until the row exists: nothing is proposed to Entra then), or Head Office for everyone else (HR, FIN, OPS ...).
 -- Run in the Azure portal Query editor on sqldb-hrint (open from the database, not master) as the Entra admin.
 -- Safe to re-run. Comments contain no apostrophes and no dashes other than the comment marker.
 
@@ -22,8 +23,8 @@ SELECT h.employee_id, h.employee_number, h.company_id, h.company_count, h.employ
        h.first_name, h.preferred_name, h.last_name,
        h.org_level1 AS district, h.org_level2 AS store,
        s.name AS store_name, s.city AS store_city, s.brand,
-       CASE WHEN s.store_code IS NOT NULL THEN s.name ELSE N'Head Office' END AS department,
-       CASE WHEN s.store_code IS NOT NULL THEN 1 ELSE 0 END AS is_store,
+       CASE WHEN h.org_level2 LIKE '[A-Z][0-9][0-9][0-9][0-9]%' THEN s.name ELSE N'Head Office' END AS department,
+       CASE WHEN h.org_level2 LIKE '[A-Z][0-9][0-9][0-9][0-9]%' THEN 1 ELSE 0 END AS is_store,
        h.job_code, jc.job_description AS job_title, h.full_or_part_time, h.date_in_job,
        h.status_start_date, h.original_hire_date, h.last_hire_date, h.termination_date, h.date_last_worked, h.termination_category,
        c.work_email,
