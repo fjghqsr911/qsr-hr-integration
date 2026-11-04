@@ -29,6 +29,7 @@ export const Roles = {
   SummaryAdmin: "Summary.Admin",
   SensitiveRead: "Sensitive.Read",
   SensitiveAdmin: "Sensitive.Admin",
+  EntraAdmin: "Entra.Admin",          // accept / reject / apply Entra proposals, group members, rules, links (implies Summary.Read)
   IntegrationRun: "Integration.Run",  // application role (Logic Apps / sync)
   RosterReadApp: "Roster.Read.All",   // application role: roster endpoint ONLY (e.g. directory app server)
   RosterContactsReadApp: "RosterContacts.Read.All"   // application role: roster + contact details endpoint ONLY (e.g. rewards app)
@@ -37,7 +38,8 @@ export const Roles = {
 /** Admin implies Read within the same tier. */
 const IMPLIES: Record<string, string[]> = {
   [Roles.SummaryAdmin]: [Roles.SummaryRead],
-  [Roles.SensitiveAdmin]: [Roles.SensitiveRead]
+  [Roles.SensitiveAdmin]: [Roles.SensitiveRead],
+  [Roles.EntraAdmin]: [Roles.SummaryRead]
 };
 
 const CLAIM = {

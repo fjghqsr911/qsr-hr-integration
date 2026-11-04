@@ -12,6 +12,7 @@ const contactConfig = (): ContactConfig => ({
 });
 import { authorize, describeCaller, Roles, Scopes } from "../shared/auth";
 import { runConnector } from "../shared/connectors";
+import { runEntraSyncJob } from "../shared/entra/runner";
 
 const ukgSource: UkgSource = { getAll: (path, perPage) => ukgGetAll(path, perPage, 500) };
 
@@ -31,12 +32,19 @@ async function runSync(ctx: InvocationContext, trigger: string): Promise<SyncRes
   }
 }
 
-/** Sync, then drain the Clearview queue when the sync produced events (CLEARVIEW_ENABLED). A connector failure never fails the sync. */
+/** Sync, then drain the Clearview queue when the sync produced events (CLEARVIEW_ENABLED) and refresh the Entra proposals
+ *  (ENTRA_SYNC_ENABLED). A connector or Entra failure never fails the sync. */
 export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string): Promise<SyncResult> {
   const result = await runSync(ctx, trigger);
-  if ((result.status === "succeeded" || result.status === "partial") && config.clearviewEnabled) {
-    try { await runConnector("clearview", ctx, "after-sync"); }
-    catch (e: any) { ctx.error(`[clearview] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+  if (result.status === "succeeded" || result.status === "partial") {
+    if (config.clearviewEnabled) {
+      try { await runConnector("clearview", ctx, "after-sync"); }
+      catch (e: any) { ctx.error(`[clearview] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+    }
+    if (config.entraSyncEnabled) {
+      try { await runEntraSyncJob(ctx, "after-sync"); }
+      catch (e: any) { ctx.error(`[entra] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+    }
   }
   return result;
 }

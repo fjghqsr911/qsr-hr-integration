@@ -17,10 +17,21 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `PUT /api/hub/stores/{destination}/{store}/mode` body `{ "mode": "off" \| "shadow" \| "live" }` | `Employees.Summary.Write` | `Summary.Admin` | Switch a store's delivery mode for `clearview` or `rosnet` (upserts `ref.store_modes`, `changed_by` = caller). Returns the row. Audited (`write`, field `mode`), fail-closed. No app-only callers |
 | `POST /api/hub/deliveries/{id}/retry` | `Employees.Summary.Write` | `Summary.Admin` | Re-queue a `failed` or `dead` delivery: `pending`, next attempt now, attempts kept; any other status → 409. Returns the delivery. Audited (`write`, field `status`), fail-closed |
 | `POST /api/hub/deliveries/{id}/resolve` | `Employees.Summary.Write` | `Summary.Admin` | Close a `review` or `dead` delivery as `resolved` (sets `finished_utc`); any other status → 409. A dead delivery blocks the employee's later ones until it is retried or resolved. Returns the delivery. Audited (`write`, field `status`), fail-closed |
-| `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
+| `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `entra`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
 | `GET/POST /api/hub/clearview/run` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Drain the Clearview delivery queue now (runs even when `CLEARVIEW_ENABLED` is off). Returns the run counts (`claimed`, `sent`, `shadow`, `unchanged`, `skipped`, `review`, `failed`, `dead`, `waiting`, `resolved`, `purged`, `queue`); 502 when the run failed (e.g. Clearview 401). Audited (`write`, field `deliveries`), fail-closed |
 | `POST /api/hub/clearview/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | `codes` (default): per organization key, Clearview's stores (paired on `tdlNumber` and written to `ref.destination_codes`), jobs, termination reasons and mandatory attributes, plus unpaired stores and stale mappings, as a report to fill `provisioning/17`. `employees`: seeds `xref.employees` (`source = extract`) from Clearview's employee list by employee number + last name. 409 while `CLEARVIEW_ENABLED` is not `true` (the first Clearview call starts billing). Audited (`write`), fail-closed |
 | `GET /api/employees/{id}/sensitive?reveal=sin` | `Employees.Sensitive.Read` **and** `Employees.Sensitive.Reveal` | `Sensitive.Admin` | Same, with full SIN |
+| `POST /api/hub/entra/sync` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Entra.Admin` | Run the [Entra sync](#entra-sync) now (snapshot, link, compare; never writes to Entra). Returns the run counts; 409 while another run holds the lock, 502 when the run failed. Audited (`write`, field `proposals`), fail-closed |
+| `POST /api/hub/entra/proposals/{id}/accept` | `Employees.Summary.Write` | `Entra.Admin` | `proposed` -> `accepted`, then applied at once (`applyOutcome` = `applied` / `failed` / `stale`) unless the proposal is due later (`due_later`, e.g. a disable on the date last worked) or `ENTRA_WRITE_ENABLED` is off (`writes_disabled`: the acceptance is still recorded). Returns the proposal; any other status -> 409. Audited (`write`, the field or kind), fail-closed |
+| `POST /api/hub/entra/proposals/{id}/reject` | `Employees.Summary.Write` | `Entra.Admin` | `proposed` / `accepted` -> `rejected` and a rejection row: the identical change is not proposed again until the difference disappears. 409 otherwise. Audited |
+| `POST /api/hub/entra/proposals/{id}/apply` | `Employees.Summary.Write` | `Entra.Admin` | `accepted` -> `applying` -> `applied` / `failed` (502, Graph status + code in `error`) / `stale` (Entra no longer holds the value the proposal was built on). 409 before the due date, 409 `writes_disabled` unless `ENTRA_WRITE_ENABLED` = `true`, 409 on any other status. Audited BEFORE the Graph write |
+| `POST /api/hub/entra/proposals/decide` body `{ "ids": [..], "action": "accept" \| "reject" }` | `Employees.Summary.Write` | `Entra.Admin` | Bulk accept (same rules as above, applied at once when possible) or reject; at most `ENTRA_MAX_DECIDE` ids; `results[]` with one `outcome` per id (`applied`, `accepted`, `due_later`, `writes_disabled`, `failed`, `stale`, `rejected`, `conflict`, `not_found`). One audit record per id |
+| `POST` / `DELETE /api/hub/entra/groups/{gid}/members` body `{ "employeeIds": [..] }` | `Employees.Summary.Write` | `Entra.Admin` | Add / remove linked employees to a **managed** group now (Graph write per employee, recorded as `manual` proposals in status `applied`); unlinked employees and existing / non-members are skipped (`results[].outcome`). 409 `group_not_manageable` (not managed, dynamic or role-assignable), 409 `writes_disabled`, 404 unknown group. One audit record per employee written |
+| `PUT /api/hub/entra/groups/{gid}/managed` body `{ "managed": true \| false }` | `Employees.Summary.Write` | `Entra.Admin` | Opt a group in (members fetched at the next sync; rules and manual members allowed) or out. Dynamic / role-assignable groups cannot be managed (409). Audited |
+| `PUT /api/hub/entra/rules`, `PUT /api/hub/entra/rules/{id}` | `Employees.Summary.Write` | `Entra.Admin` | Create / replace a group rule: `{ groupId, name, jobCodes, districts, stores, companies, statuses (A,L,T; default A,L), mode (add_only \| add_and_remove), enabled, notes }`; csv tokens `^[A-Za-z0-9]{1,20}$`, arrays or comma-separated, stored upper-case; the group must be managed (409). Returns the rule. Audited |
+| `DELETE /api/hub/entra/rules/{id}` | `Employees.Summary.Write` | `Entra.Admin` | Delete a rule; its open proposals become `stale`. Audited |
+| `POST /api/hub/entra/links` body `{ "employeeId", "userObjectId" }` | `Employees.Summary.Write` | `Entra.Admin` | Manual link (replaces the employee's current link; the employee's open proposals become `stale`). 404 when the user is not in the snapshot, 409 `user_already_linked` when another employee holds the user. Audited |
+| `DELETE /api/hub/entra/links/{employeeId}` | `Employees.Summary.Write` | `Entra.Admin` | Unlink (open proposals -> `stale`); 404 when not linked. Audited |
 
 `{id}` = UKG system employee ID (e.g. `EWLTH200NRY0`), visible in UKG page URLs.
 
@@ -32,7 +43,8 @@ Every employee in the response has `birthMonth` and `birthDay` (numbers or `null
 - Refreshed nightly (~2:15 AM Toronto); new hires appear the following morning.
 - Returned on every call (same role, scope and filters); the access audit records the field names, never values.
 
-**Rules:** every request needs the app's scope AND the user's role. Admin roles include their Read role.
+**Rules:** every request needs the app's scope AND the user's role. Admin roles include their Read role
+(`Entra.Admin` includes `Summary.Read`; it is the only role that may change anything in Entra and is granted by `deploy/02-entra-admin-role.sh`).
 Direct browser sessions (signed in at the Function App URL, no client app) get `SELF_CLIENT_SCOPES`
 (default `Employees.Summary.Read`; set to `none` to disable). App-only tokens (no user) are rejected on
 user endpoints.
@@ -45,6 +57,8 @@ user endpoints.
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
 | `clearviewConnectorTimer` | Timer, every 15 minutes | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. Also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |
+| `entraSyncTimer` | Timer, 06:45 **UTC** daily (after the nightly) | Snapshots Entra users and groups, links them to employees and turns UKG differences into **proposals** (see [Entra sync](#entra-sync)). Does nothing unless `ENTRA_SYNC_ENABLED` = `true`. Also runs right after every succeeded / partial intraday sync when enabled. Never writes to Entra |
+| `entraSyncRun` | `POST /api/hub/entra/sync` | Same run on demand; always allowed. Role `Entra.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`; audited |
 
 Each run: window = end of last successful run (or first backfill start) minus 2 hours → `employee-changes` → per employee,
 employment details (in-scope check) + job history → one SQL transaction replacing those employees' rows → event rebuild
@@ -103,11 +117,18 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `CLEARVIEW_WAITING_ALERT_DAYS` | Days after a sent import before `[delivery] waiting` is logged for an employee Payroll has not added | default `5` |
 | `CLEARVIEW_TIMEOUT_MS` | Clearview call timeout | default `20000` |
 | `HUB_SHADOW_RETENTION_DAYS` | Days masked shadow payloads are kept in `out.shadow_payloads` | default `30` |
+| `ENTRA_SYNC_ENABLED` | Timer + after-sync Entra runs (snapshot, link, compare: proposals only). Manual `POST /api/hub/entra/sync` always works | `false` until `deploy/01-entra-graph-permissions.sh` has run and scripts 18-20 are in place, then `true` |
+| `ENTRA_WRITE_ENABLED` | Kill switch for **every** Graph write (apply, manual group members). Off: accept still records, apply and members answer 409 `writes_disabled` | `false` until the first proposals have been reviewed, then `true` |
+| `ENTRA_ACCOUNT_DOMAINS` | Account domains whose Entra users are snapshotted and matched to work emails | default `qsrgroup.ca` |
+| `ENTRA_GRAPH_BASE` | Microsoft Graph base URL | default `https://graph.microsoft.com/v1.0` |
+| `ENTRA_HEAD_OFFICE_CITY` | `officeLocation` for head office staff (department `Head Office`) | unset = their `officeLocation` is left alone |
+| `ENTRA_MAX_DECIDE` | Max ids per `proposals/decide` and per manual group member call | default `200` |
 | `ALLOW_LOCAL_NO_AUTH`, `LOCAL_ROLES`, `LOCAL_SCOPES` | Local testing without sign-in | **never set in Azure** (ignored there anyway) |
 
 ## Audit log
 
-Sensitive reads, SIN reveals, and writes (store mode, delivery retry / resolve, Clearview run / discover) are recorded in Table Storage `AccessAudit`:
+Sensitive reads, SIN reveals, and writes (store mode, delivery retry / resolve, Clearview run / discover, every Entra action: sync, accept / reject / apply,
+group members, managed flag, rules, links) are recorded in Table Storage `AccessAudit`:
 who, which app, which employee, which **field names**, action, outcome, time — never values.
 Partition = `yyyyMM`; rows sort newest first. If the audit write fails, **no data is returned**.
 
@@ -140,6 +161,9 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `15-admin-endpoint-grants.sql` | Grants the Function App user INSERT/UPDATE on `ref.store_modes` and UPDATE on `out.deliveries` for the admin endpoints (store mode, retry, resolve). Without it they return 503 |
 | `16-connector-grants-and-columns.sql` | Clearview connector: grants to `mi-func-hrint` on `out.last_sent`, `out.shadow_payloads`, `xref.employees`, `ref.destination_codes`, `stage.sync_runs` and SELECT on the tables it reads; adds `out.deliveries.response_ref`, the `waiting` / `skipped` statuses, `ref.destination_codes.destination_id`, the `category` / `company` code types and the `company` column (primary key becomes destination, code_type, company, ukg_code). Run before the first connector run; the Diagnostics tab's grants check lists what is missing |
 | `17-destination-codes-clearview.sql` | Re-runnable MERGE template for the job / termination / category / company pairs a person decides, one row per organization (`company` = `SWN6T` or `SWNGK`; empty = shared). Fill its VALUES block from the `discover` report (stores are paired automatically by `discover`, not here) |
+| `18-ref-stores.sql` | `ref.stores`: store names, brands, districts, cities (filled from the store CSV) for the monitor directory and the Entra department / officeLocation |
+| `19-directory-view.sql` | `rpt.v_directory`: one row per employee with store name and city, job title and **work email** (the only contact column; personal details stay out of reach of the monitor) |
+| `20-entra-tables.sql` | Schema `entra`: `users`, `groups`, `group_members` (snapshot), `links`, `link_issues`, `rules`, `proposals`, `rejections`, `sync_runs`; grants the Function App user the schema plus SELECT on `ref.stores`, `rpt.v_directory` and `rpt.workforce_events`. Run after 18 and 19 and before the first Entra sync; the Diagnostics tab's entra row reports these objects and grants (skipped until they exist) |
 
 13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
 is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
@@ -248,6 +272,50 @@ replacing that one class; the write calls and the New Hires lookups stay as they
 
 Tests: `test/clearview-mapper.test.js` (fixtures in `test/fixtures/clearview/`, one per operation), `test/delivery.test.js`,
 `test/clearview-connector.test.js`, `test/clearview-function.test.js`; mocks only.
+
+## Entra sync
+
+Keeps Entra ID in step with UKG for everyone with a `qsrgroup.ca` work email, **without pushing anything automatically**: the sync
+(`src/shared/entra/`: `snapshot`, `link`, pure `compare`, `apply`, `store`, `sync`, `runner`; `src/shared/graph.ts`; `src/functions/entraSync.ts`,
+`entraAdmin.ts`) only writes *proposals* to the hub database; an `Entra.Admin` accepts, rejects or applies them from the monitor, and every
+Graph write happens through this Function App's managed identity, audited before it runs, and only while `ENTRA_WRITE_ENABLED` = `true`.
+
+**Each run** (06:45 UTC timer, after each successful intraday sync, or `POST /api/hub/entra/sync`; locked through `entra.sync_runs` for 30 min):
+1. **Snapshot**: Graph `GET /users` per `ENTRA_ACCOUNT_DOMAINS` (`endsWith` filter on UPN and mail, `ConsistencyLevel: eventual`, guests dropped) ->
+   `entra.users` (users that drop out of the listing get `missing_since_utc`); `GET /groups` -> `entra.groups`; members of **managed** groups only ->
+   `entra.group_members`. `onPremisesSyncEnabled` is snapshotted even though accounts are cloud-only: such users get `blocked` proposals.
+2. **Link**: `lower(work_email)` from `rpt.v_directory` = `lower(upn)` or `lower(mail)` -> `entra.links` (`matched_email`). Links persist: the hub
+   purges work emails at termination, so the link is the only key afterwards. Manual links (`POST /api/hub/entra/links`) always win. Problems go to
+   `entra.link_issues`, rebuilt each run: `duplicate_email` (two employees one email, one email two users, or the user already linked elsewhere),
+   `email_not_in_entra`, `email_changed` (linked account no longer carries the work email: relink), `user_missing`, `user_without_employee` (orphans).
+3. **Compare** (pure, `compare.ts`): desired = `jobTitle` from `ref.job_codes`, `department` = store name from `ref.stores` or `Head Office`,
+   `officeLocation` = store city (head office: `ENTRA_HEAD_OFFICE_CITY`, or left alone), `accountEnabled` = status A / L. Differences become
+   proposals: `attribute` per field (active / on-leave staff only), `disable` for a termination with `due_date` = `date_last_worked` (else
+   `termination_date`), `enable` for a rehire, `group_add` / `group_remove` from `entra.rules` (managed, non-dynamic, non-role-assignable groups;
+   `add_only` never removes; predicates job codes / districts / stores / companies / statuses are csv, NULL = any, all must match). The latest
+   `rpt.workforce_events` row is attached as `event_id` for context (refreshed every run; it is not a stable key). Open proposals are keyed by
+   `dedupe_hash` = sha256(employee | kind | field | group | value) (filtered unique index), so a repeat run refreshes `last_seen_utc` instead of
+   duplicating; a difference that disappeared stales the open row; a `rejected` hash is suppressed until the difference disappears, then the rejection
+   is deleted so a later recurrence is proposed again.
+
+**Statuses**: `proposed` -> `accepted` -> `applying` -> `applied` | `failed` | `stale`; `rejected`; `blocked` (on-prem synced account). A termination
+proposal stays `accepted` until its due date (Toronto); the monitor shows it as due from that day and an admin applies it (never the timer).
+Apply claims the row with a status-guarded `UPDATE ... OUTPUT` (two admins: the loser gets 409), re-reads the user from Graph, gives up as `stale`
+when Entra no longer holds `current_value`, then writes one field (`PATCH /users/{id}`), `{accountEnabled}`, `POST /groups/{id}/members/$ref` (already a
+member = no-op) or `DELETE .../members/{uid}/$ref` (404 = no-op) and refreshes the snapshot row. Graph errors (`Graph 403: Authorization_RequestDenied`
+for a user holding a directory role, say) end as `failed` with status + code only; there is no retry loop.
+
+**Graph access**: application permissions on the Function App's system-assigned identity, granted all at once by `deploy/01-entra-graph-permissions.sh`
+(`User.Read.All`, `GroupMember.Read.All`, `User.ReadWrite.All`, `User.EnableDisableAccount.All`, `GroupMember.ReadWrite.All`; nothing wider). The client
+(`graph.ts`, no SDK) caches the token until expiry minus 60 s, times out after 20 s, retries 429 / 503 / 504 honouring `Retry-After` (max 3), follows
+`@odata.nextLink`; its errors carry the HTTP status and Graph `error.code` only, never a body, a token or a query string. `deploy/02-entra-admin-role.sh`
+adds the `Entra.Admin` app role to the hrint-api registration (existing roles kept) and assigns it to `ENTRA_ADMINS`.
+
+**Order of operations**: scripts 18 (with the store CSV), 19, 20 on `sqldb-hrint` -> `01-entra-graph-permissions.sh` -> `ENTRA_SYNC_ENABLED=true` ->
+`POST /api/hub/entra/sync` and check the `entra` row of `GET /api/hub/diagnostics` (token + `GET /users?$top=1` probe, its own objects + grants check, last run age, counts: users,
+linked, unlinked with email, orphans, proposed, due, failed, blocked) -> `02-entra-admin-role.sh` -> review proposals -> `ENTRA_WRITE_ENABLED=true`.
+
+Tests: `test/compare.test.js`, `test/link.test.js`, `test/graph.test.js` (stubbed fetch), `test/entraSync.test.js`, `test/entraAdmin.test.js`; mocks only.
 
 ## Deploy
 
