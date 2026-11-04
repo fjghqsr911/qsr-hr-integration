@@ -34,7 +34,7 @@ module.exports = async () => {
     }),
     runConnector: async () => { throw new Error("not in this test"); }, runDiscovery: async () => { throw new Error("not in this test"); }
   });
-  const { hubDiagnostics, GRANTS_SQL, GRANTS, CODES_COUNT_SQL, ENTRA_COUNTS_SQL, ENTRA_LAST_RUN_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
+  const { hubDiagnostics, GRANTS_SQL, GRANTS, CODES_COUNT_SQL, ENTRA_COUNTS_SQL, ENTRA_LAST_RUN_SQL, ENTRA_GRANTS, ENTRA_GRANTS_SQL } = require(path.join(DIST, "functions", "hubDiagnostics.js"));
   const { STATS_SQL } = require(path.join(DIST, "shared", "deliveryStore.js"));
 
   const principal = (claims) => Buffer.from(JSON.stringify({ claims })).toString("base64");
@@ -92,7 +92,7 @@ module.exports = async () => {
       eq(b.audit.ms, 7);
       assert(typeof b.sql.ms === "number" && typeof b.ukg.ms === "number", "sql / ukg carry ms");
       assert(!("missing" in b.settings) && !("unresolved" in b.settings) && !("missing" in b.grants), "readers never see setting / grant names");
-      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL, ENTRA_COUNTS_SQL, ENTRA_LAST_RUN_SQL].sort());
+      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL, ENTRA_GRANTS_SQL].sort(), "entra not provisioned: its counts are not queried");
       assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
       eq(auditWrites, 0, "diagnostics never writes an audit record");
       eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
@@ -228,7 +228,9 @@ module.exports = async () => {
     });
 
     // ------------------------------------------------------------ entra ------------------------------------------------------------
-    const entraPool = (counts = {}, run = null) => fakePool((text) =>
+    const entraGranted = (over = {}) => ({ recordset: [{ ...Object.fromEntries(ENTRA_GRANTS.flatMap(g => [[g.column, 1], [`${g.column}Exists`, 1234]])), ...over }] });
+    const entraPool = (counts = {}, run = null, grantsRow = entraGranted()) => fakePool((text) =>
+      text === ENTRA_GRANTS_SQL ? grantsRow :
       text === ENTRA_COUNTS_SQL ? { recordset: [{ users: 0, linked: 0, unlinked_with_email: 0, orphans: 0, proposed: 0, due: 0, failed: 0, blocked: 0, ...counts }] } :
       text === ENTRA_LAST_RUN_SQL ? { recordset: run ? [run] : [] } : allGranted(text));
     const recentRun = (over = {}) => ({ run_id: "11111111-2222-3333-4444-555555555555", started_utc: new Date(Date.now() - 3600_000), finished_utc: new Date(Date.now() - 3500_000), status: "succeeded", trigger_kind: "timer", ...over });
@@ -236,8 +238,8 @@ module.exports = async () => {
     await test("diagnostics: entra disabled with no snapshot -> probe skipped, warn, counts from SQL, writeEnabled false, no Graph call", async () => {
       reset(); pool = entraPool();
       const e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq(Object.keys(e).sort(), ["api", "counts", "detail", "enabled", "lastRun", "status", "writeEnabled"]);
-      eq([e.status, e.enabled, e.writeEnabled, e.lastRun], ["warn", false, false, null]);
+      eq(Object.keys(e).sort(), ["api", "counts", "detail", "enabled", "grants", "lastRun", "status", "writeEnabled"]);
+      eq([e.status, e.enabled, e.writeEnabled, e.lastRun, e.grants], ["warn", false, false, null, { status: "pass" }]);
       eq(e.api, { status: "skipped", detail: "sync disabled and no snapshot yet" });
       eq(e.counts, { users: 0, linked: 0, unlinkedWithEmail: 0, orphans: 0, proposed: 0, due: 0, failed: 0, blocked: 0 });
       assert(/ENTRA_SYNC_ENABLED is not "true"/.test(e.detail) && /ENTRA_WRITE_ENABLED is not "true"/.test(e.detail), e.detail);
@@ -273,14 +275,35 @@ module.exports = async () => {
       reset(); process.env.ENTRA_SYNC_ENABLED = "true"; graphFails = new Error("Graph 403 on GET /users: Authorization_RequestDenied"); pool = entraPool({ users: 5 }, recentRun());
       e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
       eq([e.status, e.api], ["fail", { status: "fail", detail: "Graph 403 on GET /users: Authorization_RequestDenied" }]);
-      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = fakePool((text) => { if (text === ENTRA_COUNTS_SQL) throw new Error("Invalid object name entra.users"); return allGranted(text); });
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = fakePool((text) => { if (text === ENTRA_GRANTS_SQL) throw new Error("db down"); return allGranted(text); });
       e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq([e.status, e.counts, e.lastRun], ["fail", null, null]); assert(/entra tables unavailable: Invalid object name/.test(e.detail), e.detail);
-      reset(); pool = fakePool((text) => { if (text === ENTRA_COUNTS_SQL) throw new Error("Invalid object name entra.users"); return allGranted(text); });
+      eq([e.status, e.counts, e.lastRun], ["fail", null, null]); assert(/entra tables unavailable: db down/.test(e.detail), e.detail);
+      reset(); pool = fakePool((text) => { if (text === ENTRA_GRANTS_SQL) throw new Error("db down"); return allGranted(text); });
       e = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
-      eq(e.status, "warn", "not provisioned yet and switched off is a warning, not a failure"); eq(graphCalls, []);
-      for (const g of ["INSERT on entra.users", "UPDATE on entra.proposals", "DELETE on entra.links", "INSERT on entra.sync_runs", "SELECT on ref.stores", "SELECT on rpt.v_directory"])
-        assert(GRANTS.some(x => `${x.permission} on ${x.object}` === g), `grant check covers ${g}`);
+      eq(e.status, "warn", "sql down and switched off is a warning, not a failure"); eq(graphCalls, []);
+    });
+
+    await test("diagnostics: entra grants live in the entra component, not the shared grants row; not provisioned -> skipped with a note (warn off, fail on); missing grant -> fail, names for admins only", async () => {
+      for (const g of ["INSERT on entra.users", "UPDATE on entra.proposals", "DELETE on entra.links", "INSERT on entra.sync_runs", "SELECT on ref.stores", "SELECT on rpt.v_directory"]) {
+        assert(ENTRA_GRANTS.some(x => `${x.permission} on ${x.object}` === g), `entra grant check covers ${g}`);
+        assert(!GRANTS.some(x => `${x.permission} on ${x.object}` === g), `shared grants row does not include ${g} (it would fail before scripts 18-20 exist)`);
+      }
+      assert(/OBJECT_ID\('entra.users'\) AS entraUsersInsertExists/.test(ENTRA_GRANTS_SQL) && /HAS_PERMS_BY_NAME\('rpt.v_directory','OBJECT','SELECT'\) AS directorySelect/.test(ENTRA_GRANTS_SQL));
+      reset(); pool = fakePool(allGranted);                                                           // no Exists columns = objects missing
+      let b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
+      eq(b.grants.status, "pass", "the shared grants row is unaffected");
+      eq(b.entra.status, "warn"); eq(b.entra.grants.status, "skipped"); assert(/not provisioned yet \(run provisioning\/18, 19, 20\): entra.users/.test(b.entra.grants.detail), b.entra.grants.detail);
+      eq([b.entra.counts, b.entra.lastRun], [null, null]); assert(/entra tables not provisioned/.test(b.entra.detail), b.entra.detail);
+      assert(!pool.calls.some(c => c.text === ENTRA_COUNTS_SQL), "counts are not queried when the tables are missing");
+      reset(); process.env.ENTRA_SYNC_ENABLED = "true"; pool = fakePool(allGranted);
+      b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
+      eq(b.entra.status, "fail", "enabled but not provisioned");
+      reset(); pool = entraPool({ users: 3 }, recentRun(), entraGranted({ entraProposalsUpdate: 0, storesSelect: 0 }));
+      const asAdmin = (await hubDiagnostics(req(admin), ctx)).jsonBody.entra;
+      eq(asAdmin.status, "fail"); eq(asAdmin.grants, { status: "fail", detail: "2 of 6 grant(s) missing", missing: ["UPDATE on entra.proposals", "SELECT on ref.stores"] });
+      eq(asAdmin.counts.users, 3, "counts still read");
+      const asReader = (await hubDiagnostics(req(reader), ctx)).jsonBody.entra;
+      eq(asReader.grants, { status: "fail", detail: "2 of 6 grant(s) missing" });
     });
   } finally { restore(); }
 

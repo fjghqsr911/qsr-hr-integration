@@ -15,6 +15,7 @@ module.exports = async () => {
       async isRunning() { return s.running; },
       async startRun(trigger) { s.runs.push({ id: "r1", trigger, status: "running" }); return "r1"; },
       async finishRun(id, status, counts, error) { Object.assign(s.runs.find(r => r.id === id), { status, counts, error }); },
+      async activeUserCount() { return [...s.userMap.values()].filter(u => !u.missing).length; },
       async upsertUsers(users, fetchedUtc) { for (const u of users) s.userMap.set(u.id, { ...u, fetchedUtc, missing: false }); },
       async markMissingUsers(fetchedUtc) { let n = 0; for (const u of s.userMap.values()) if (u.fetchedUtc < fetchedUtc && !u.missing) { u.missing = true; n++; } return n; },
       async upsertGroups(groups) { for (const g of groups) s.groupMap.set(g.id, { ...(s.groupMap.get(g.id) ?? { managed: false }), ...g }); },
@@ -33,7 +34,7 @@ module.exports = async () => {
       async latestEvents() { return s.events; },
       async upsertProposals(rows) { let n = 0; for (const r of rows) { const open = [...s.proposalMap.values()].find(p => p.dedupeHash === r.dedupeHash && ["proposed", "accepted", "applying", "blocked"].includes(p.status)); if (open) { open.seen = (open.seen ?? 1) + 1; continue; } s.proposalMap.set(s.nextId, { proposalId: s.nextId, ...r }); s.nextId++; n++; } return n; },
       async staleProposals(ids) { let n = 0; for (const id of ids) { const p = s.proposalMap.get(id); if (p && ["proposed", "accepted", "blocked"].includes(p.status)) { p.status = "stale"; n++; } } return n; },
-      async pruneRejections(employees, keep) { s.prunedFor = employees; let n = 0; for (const h of [...s.rejectionSet]) if (!keep.includes(h)) { s.rejectionSet.delete(h); n++; } return n; }
+      async pruneRejections(runId, employees, keep) { s.prunedRun = runId; s.prunedFor = employees; let n = 0; for (const h of [...s.rejectionSet]) if (!keep.includes(h)) { s.rejectionSet.delete(h); n++; } return n; }
     };
     return s;
   };
@@ -78,6 +79,7 @@ module.exports = async () => {
     eq(store.proposalMap.get(7).status, "stale"); eq(store.proposalMap.get(8).status, "applying", "applying rows are never staled");
     eq([...store.rejectionSet], [h], "the rejection still suppressing a live difference is kept; the other is pruned");
     eq(store.prunedFor, ["E1", "E2"], "pruning is scoped to the employees compared with a live user");
+    eq(store.prunedRun, "r1", "and to rejections recorded before this run started");
     const blocked = [...store.proposalMap.values()].find(p => p.status === "blocked");
     eq([blocked.employeeId, blocked.field], ["E2", "department"]);
     r = await runEntraSync(store, graph, opts());
@@ -97,6 +99,17 @@ module.exports = async () => {
     const empty = await runEntraSync(store, fakeGraph({ users: [] }), opts());
     eq(empty.status, "failed"); assert(/Graph listed no users/.test(empty.message), empty.message);
     assert(!store.userMap.get("u1").missing && [...store.rejectionSet].length === 1 && store.linkMap.size === 1, "an empty listing changes nothing: no users marked missing, no rejections pruned, links kept");
+  });
+  await test("sync run: a listing that collapsed below half of the previous snapshot is refused (nothing changes); at least half is accepted", async () => {
+    const seed = () => { const st = memStore({ directory: [dir("E1", "u1@qsrgroup.ca")], rejections: ["keep-me"] }); for (let i = 1; i <= 10; i++) st.userMap.set(`u${i}`, { ...gu(`u${i}`, `u${i}@qsrgroup.ca`), fetchedUtc: new Date(0), missing: false }); return st; };
+    let store = seed();
+    const listing = (n) => Array.from({ length: n }, (_, i) => gu(`u${i + 1}`, `u${i + 1}@qsrgroup.ca`));
+    let r = await runEntraSync(store, fakeGraph({ users: listing(4) }), opts());
+    eq(r.status, "failed"); assert(/listed 4 users but the previous snapshot has 10: listing collapsed/.test(r.message), r.message);
+    eq([...store.userMap.values()].filter(u => u.missing).length, 0, "no user marked missing"); eq([...store.rejectionSet], ["keep-me"]); eq(store.runs[0].status, "failed");
+    store = seed();
+    r = await runEntraSync(store, fakeGraph({ users: listing(5) }), opts());
+    eq(r.status, "succeeded"); eq([...store.userMap.values()].filter(u => u.missing).length, 5, "half is accepted: the five absent users are marked missing");
   });
 
   // ---------------------------------------------------------------- functions: timer, hook, endpoint ----------------------------------------------------------------

@@ -22,12 +22,12 @@ module.exports = async () => {
     assert(r.issues.find(i => i.employeeId === "E1").detail.includes("2 employees share"), "detail says why");
     assert(r.issues.find(i => i.employeeId === "E3").detail.includes("2 Entra users"));
   });
-  await test("link: existing links persist (work email purged at termination), manual wins over a different email match, email_changed reported", () => {
+  await test("link: existing links persist (work email purged at termination), manual wins over a different email match and is never reported as email_changed", () => {
     const existing = [{ employeeId: "E1", userObjectId: "u1", method: "manual", matchedEmail: null }, { employeeId: "E2", userObjectId: "u2", method: "matched_email", matchedEmail: "old@qsrgroup.ca" }];
     const r = computeLinks([emp("E1", "other@qsrgroup.ca"), emp("E2", null, { employeeStatus: "T" }), emp("E3", "new@qsrgroup.ca")],
                            [usr("u1", "pat@qsrgroup.ca"), usr("u2", "old@qsrgroup.ca"), usr("u9", "other@qsrgroup.ca"), usr("u3", "new@qsrgroup.ca")], existing);
     eq(r.autoLinks, [{ employeeId: "E2", userObjectId: "u2", matchedEmail: "old@qsrgroup.ca" }, { employeeId: "E3", userObjectId: "u3", matchedEmail: "new@qsrgroup.ca" }], "E2 kept without an email; E1 stays manual");
-    eq(issues(r, "email_changed"), ["E1"]); eq(issues(r, "user_without_employee"), ["u9"]);
+    eq(issues(r, "email_changed"), [], "a manual link exists because the emails differ"); eq(issues(r, "user_without_employee"), ["u9"]);
     eq(issues(r, "user_missing"), []);
   });
   await test("link: a user already linked to another employee is not linked twice (duplicate_email with the other employee); email_changed for an auto link whose email moved", () => {

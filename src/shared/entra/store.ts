@@ -1,5 +1,5 @@
 import { sql } from "../sql";
-import { DirectoryRow, EntraUserSnapshot, GroupSnapshot, OpenProposal, ProposalCandidate, ProposalStatus, Rule } from "./compare";
+import { DirectoryRow, EntraUserSnapshot, GroupSnapshot, OpenProposal, OPEN_STATUSES, ProposalCandidate, ProposalStatus, Rule } from "./compare";
 import { AutoLink, LinkIssue, LinkRow } from "./link";
 import { GraphGroup, GraphUser } from "../graph";
 
@@ -10,7 +10,9 @@ import { GraphGroup, GraphUser } from "../graph";
   Nothing here logs values; errors bubble up to the caller.
 */
 
-export const OPEN_STATUS_LIST = "'proposed', 'accepted', 'applying', 'blocked'";
+/** The open statuses (compare.ts OPEN_STATUSES) as a SQL list, and the ones a sync or an admin action may turn stale (never a live applying row). */
+export const OPEN_STATUS_LIST = OPEN_STATUSES.map(s => `'${s}'`).join(", ");
+export const STALEABLE_STATUS_LIST = OPEN_STATUSES.filter(s => s !== "applying").map(s => `'${s}'`).join(", ");
 /** An applying row older than this is stuck (crash between claim and finish): it may be claimed again or rejected. */
 export const STUCK_APPLYING_MINUTES = 15;
 const STUCK_SQL = `(status = 'applying' AND last_seen_utc < DATEADD(minute, -${STUCK_APPLYING_MINUTES}, SYSUTCDATETIME()))`;
@@ -63,11 +65,17 @@ OUTPUT $action AS merge_action;`;
 
 export const PROPOSALS_STALE_SQL = `
 UPDATE entra.proposals SET status = 'stale'
-WHERE proposal_id IN (SELECT value FROM OPENJSON(@ids)) AND status IN ('proposed', 'accepted', 'blocked');
+WHERE proposal_id IN (SELECT value FROM OPENJSON(@ids)) AND status IN (${STALEABLE_STATUS_LIST});
 SELECT @@ROWCOUNT AS staled;`;
 
 export const STALE_EMPLOYEE_PROPOSALS_SQL = `
-UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN ('proposed', 'accepted', 'blocked');
+UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN (${STALEABLE_STATUS_LIST});
+SELECT @@ROWCOUNT AS staled;`;
+
+/** A change done by hand (manual group member): any open proposal for the same change is now stale. */
+export const STALE_BY_HASH_SQL = `
+UPDATE entra.proposals SET status = 'stale'
+WHERE dedupe_hash = CONVERT(binary(32), @hash, 2) AND proposal_id <> @exceptId AND status IN (${STALEABLE_STATUS_LIST});
 SELECT @@ROWCOUNT AS staled;`;
 
 export const USERS_UPSERT_SQL = `
@@ -127,16 +135,18 @@ SELECT employeeId, userObjectId, kind, detail FROM OPENJSON(@rows) WITH (employe
 export const LINK_MANUAL_SQL = `
 SET XACT_ABORT ON;
 BEGIN TRANSACTION;
-UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN ('proposed', 'accepted', 'blocked');
+UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN (${STALEABLE_STATUS_LIST});
 DELETE FROM entra.links WHERE employee_id = @employeeId;
 INSERT INTO entra.links (employee_id, user_object_id, method, matched_email, linked_by) VALUES (@employeeId, @userObjectId, 'manual', NULL, @by);
 COMMIT TRANSACTION;
 SELECT employee_id, user_object_id, method, matched_email, linked_utc, linked_by FROM entra.links WHERE employee_id = @employeeId;`;
 
 export const LINK_DELETE_SQL = `
-UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN ('proposed', 'accepted', 'blocked');
+UPDATE entra.proposals SET status = 'stale' WHERE employee_id = @employeeId AND status IN (${STALEABLE_STATUS_LIST});
 DELETE FROM entra.links WHERE employee_id = @employeeId;
 SELECT @@ROWCOUNT AS deleted;`;
+
+export const DIRECTORY_ROW_SQL = `SELECT employee_id, employee_status, work_email FROM rpt.v_directory WHERE employee_id = @employeeId;`;
 
 export const DIRECTORY_SQL = `
 SELECT employee_id, employee_number, company_id, company_count, employee_status, display_name, district, store, store_name, store_city, department,
@@ -159,7 +169,7 @@ UPDATE entra.rules SET group_id = @groupId, name = @name, job_codes = @jobCodes,
 OUTPUT ${RULE_COLUMNS.replace(/(\w+)/g, "inserted.$1")}
 WHERE rule_id = @id;`;
 export const RULE_DELETE_SQL = `
-UPDATE entra.proposals SET status = 'stale' WHERE rule_id = @id AND status IN ('proposed', 'accepted', 'blocked');
+UPDATE entra.proposals SET status = 'stale' WHERE rule_id = @id AND status IN (${STALEABLE_STATUS_LIST});
 DELETE FROM entra.rules WHERE rule_id = @id;
 SELECT @@ROWCOUNT AS deleted;`;
 
@@ -178,11 +188,13 @@ MERGE entra.rejections WITH (HOLDLOCK) AS t USING (SELECT CONVERT(binary(32), @h
 WHEN MATCHED THEN UPDATE SET proposal_id = @proposalId, rejected_by = @by, rejected_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT (dedupe_hash, proposal_id, rejected_by) VALUES (s.dedupe_hash, @proposalId, @by);`;
 
-/** Rejections of the employees compared in this run whose difference is gone (the rejection row points at the rejected proposal). */
+/** Rejections of the employees compared in this run whose difference is gone (the rejection row points at the rejected proposal);
+ *  a rejection recorded after the run started is left for the next run to judge. */
 export const REJECTIONS_PRUNE_SQL = `
 DELETE r FROM entra.rejections r
 JOIN entra.proposals p ON p.proposal_id = r.proposal_id
 WHERE p.employee_id IN (SELECT value FROM OPENJSON(@employees))
+  AND r.rejected_utc < (SELECT started_utc FROM entra.sync_runs WHERE run_id = @runId)
   AND r.dedupe_hash NOT IN (SELECT CONVERT(binary(32), value, 2) FROM OPENJSON(@keep));
 SELECT @@ROWCOUNT AS pruned;`;
 
@@ -257,6 +269,7 @@ export interface EntraStore {
   isRunning(): Promise<boolean>;
   startRun(trigger: "timer" | "after-sync" | "manual"): Promise<string>;
   finishRun(runId: string, status: string, counts: Partial<RunCounts>, error?: string): Promise<void>;
+  activeUserCount(): Promise<number>;
   upsertUsers(users: GraphUser[], fetchedUtc: Date): Promise<void>;
   markMissingUsers(fetchedUtc: Date): Promise<number>;
   upsertGroups(groups: GraphGroup[], fetchedUtc: Date): Promise<void>;
@@ -274,7 +287,7 @@ export interface EntraStore {
   latestEvents(today: string): Promise<Map<string, number>>;
   upsertProposals(rows: ProposalCandidate[]): Promise<number>;
   staleProposals(ids: number[]): Promise<number>;
-  pruneRejections(comparedEmployees: string[], keepHashes: string[]): Promise<number>;
+  pruneRejections(runId: string, comparedEmployees: string[], keepHashes: string[]): Promise<number>;
 }
 
 export class SqlEntraStore implements EntraStore {
@@ -302,6 +315,10 @@ export class SqlEntraStore implements EntraStore {
   }
 
   // ---------------- snapshot ----------------
+  async activeUserCount(): Promise<number> {
+    const r = await this.pool.request().query(`SELECT COUNT(*) AS n FROM entra.users WHERE missing_since_utc IS NULL`);
+    return Number(r.recordset?.[0]?.n ?? 0);
+  }
   async upsertUsers(users: GraphUser[], fetchedUtc: Date): Promise<void> {
     for (let i = 0; i < users.length; i += 1000) {
       await this.pool.request().input("rows", sql.NVarChar(sql.MAX), JSON.stringify(users.slice(i, i + 1000))).input("fetchedUtc", sql.DateTime2(0), fetchedUtc).query(USERS_UPSERT_SQL);
@@ -368,9 +385,10 @@ export class SqlEntraStore implements EntraStore {
     const r = await this.pool.request().input("ids", sql.NVarChar(sql.MAX), JSON.stringify(ids)).query(PROPOSALS_STALE_SQL);
     return Number(r.recordset?.[0]?.staled ?? 0);
   }
-  async pruneRejections(comparedEmployees: string[], keepHashes: string[]): Promise<number> {
+  async pruneRejections(runId: string, comparedEmployees: string[], keepHashes: string[]): Promise<number> {
     if (!comparedEmployees.length) return 0;
-    const r = await this.pool.request().input("employees", sql.NVarChar(sql.MAX), JSON.stringify(comparedEmployees)).input("keep", sql.NVarChar(sql.MAX), JSON.stringify(keepHashes)).query(REJECTIONS_PRUNE_SQL);
+    const r = await this.pool.request().input("runId", sql.UniqueIdentifier, runId).input("employees", sql.NVarChar(sql.MAX), JSON.stringify(comparedEmployees))
+      .input("keep", sql.NVarChar(sql.MAX), JSON.stringify(keepHashes)).query(REJECTIONS_PRUNE_SQL);
     return Number(r.recordset?.[0]?.pruned ?? 0);
   }
 
@@ -390,6 +408,10 @@ export class SqlEntraStore implements EntraStore {
   async finish(id: number, status: "applied" | "failed" | "stale", currentValue: string | null, error: string | null): Promise<ProposalRow | null> {
     return this.first(await this.byId(id).input("status", sql.VarChar(20), status).input("currentValue", sql.NVarChar(256), currentValue)
       .input("error", sql.NVarChar(300), error ? error.slice(0, 300) : null).query(PROPOSAL_FINISH_SQL));
+  }
+  async staleByHash(hash: string, exceptId: number): Promise<number> {
+    const r = await this.pool.request().input("hash", sql.Char(64), hash).input("exceptId", sql.BigInt, exceptId).query(STALE_BY_HASH_SQL);
+    return Number(r.recordset?.[0]?.staled ?? 0);
   }
   async insertManualApplied(row: { employeeId: string; userObjectId: string; kind: "group_add" | "group_remove"; groupId: string; hash: string; by: string }): Promise<ProposalRow | null> {
     return this.first(await this.pool.request().input("employeeId", sql.VarChar(20), row.employeeId).input("userObjectId", sql.VarChar(36), row.userObjectId)
@@ -444,6 +466,12 @@ export class SqlEntraStore implements EntraStore {
     return r.recordset?.[0] ? mapLinkRow(r.recordset[0]) : null;
   }
   async unlink(employeeId: string): Promise<number> { const r = await this.pool.request().input("employeeId", sql.VarChar(20), employeeId).query(LINK_DELETE_SQL); return Number(r.recordset?.[0]?.deleted ?? 0); }
+  /** The employee as rpt.v_directory knows it (null when the hub does not have the employee). */
+  async directoryRow(employeeId: string): Promise<{ employeeId: string; employeeStatus: string | null; workEmail: string | null } | null> {
+    const r = await this.pool.request().input("employeeId", sql.VarChar(20), employeeId).query(DIRECTORY_ROW_SQL);
+    const row = r.recordset?.[0];
+    return row ? { employeeId: row.employee_id, employeeStatus: nz(row.employee_status), workEmail: nz(row.work_email) } : null;
+  }
   async linkFor(employeeId: string) {
     const r = await this.pool.request().input("employeeId", sql.VarChar(20), employeeId).query(`SELECT employee_id, user_object_id, method, matched_email, linked_utc, linked_by FROM entra.links WHERE employee_id = @employeeId`);
     return r.recordset?.[0] ? mapLinkRow(r.recordset[0]) : null;

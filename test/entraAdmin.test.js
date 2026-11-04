@@ -35,7 +35,8 @@ module.exports = async () => {
   const UID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", UID2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", UID3 = "cccccccc-cccc-cccc-cccc-cccccccccccc";
   let db;
   const newDb = () => ({
-    proposals: new Map(), links: new Map(), users: new Map(), groups: new Map(), members: new Set(), rules: new Map(), rejections: [], manual: [], userUpdates: [], nextRule: 10, nextProposal: 500
+    proposals: new Map(), links: new Map(), users: new Map(), groups: new Map(), members: new Set(), rules: new Map(), rejections: [], manual: [], userUpdates: [], nextRule: 10, nextProposal: 500,
+    directory: new Set(["E100", "E200", "E300"])
   });
   const proposal = (id, over = {}) => ({ proposal_id: id, employee_id: "E100", user_object_id: UID, kind: "attribute", field: "jobTitle", group_id: null, current_value: "Manager",
     proposed_value: "General Manager", due_date: null, source: "compare", event_id: 7, rule_id: null, status: "proposed",
@@ -58,6 +59,8 @@ module.exports = async () => {
     if (same(t, S.PROPOSAL_FINISH_SQL)) { const p = db.proposals.get(Number(inputs.id)); if (p && p.status === "applying") { p.status = inputs.status; if (inputs.currentValue !== null && inputs.currentValue !== undefined) p.current_value = inputs.currentValue; p.error = inputs.error; if (inputs.status === "applied") p.applied_utc = new Date(); return rs(p); } return rs(); }
     if (same(t, S.REJECTION_UPSERT_SQL)) { db.rejections.push(inputs.hash); return rs(); }
     if (same(t, S.MANUAL_APPLIED_SQL)) { const row = proposal(db.nextProposal++, { employee_id: inputs.employeeId, user_object_id: inputs.userObjectId, kind: inputs.kind, field: null, group_id: inputs.groupId, current_value: null, proposed_value: null, source: "manual", status: "applied", dedupe_hash: Buffer.from(inputs.hash, "hex"), decided_by: inputs.by, applied_utc: new Date() }); db.manual.push(row); return rs(row); }
+    if (same(t, S.STALE_BY_HASH_SQL)) { let n = 0; for (const p of db.proposals.values()) if (p.dedupe_hash.toString("hex") === inputs.hash && Number(p.proposal_id) !== Number(inputs.exceptId) && ["proposed", "accepted", "blocked"].includes(p.status)) { p.status = "stale"; n++; } return rs({ staled: n }); }
+    if (same(t, S.DIRECTORY_ROW_SQL)) return rs(db.directory.has(inputs.employeeId) ? { employee_id: inputs.employeeId, employee_status: "A", work_email: null } : null);
     if (same(t, S.GROUP_SELECT_SQL)) return rs(db.groups.get(inputs.groupId));
     if (same(t, S.GROUP_MANAGED_SQL)) { const g = db.groups.get(inputs.groupId); if (g) { g.managed = !!inputs.managed; return rs(g); } return rs(); }
     if (same(t, S.RULE_INSERT_SQL)) { const r = ruleRow(db.nextRule++, { group_id: inputs.groupId, name: inputs.name, job_codes: inputs.jobCodes, districts: inputs.districts, stores: inputs.stores, companies: inputs.companies, statuses: inputs.statuses, mode: inputs.mode, enabled: inputs.enabled, notes: inputs.notes, updated_by: inputs.by }); db.rules.set(r.rule_id, r); return rs(r); }
@@ -220,6 +223,9 @@ module.exports = async () => {
       reset(); db.proposals.set(1, proposal(1, { status: "accepted" })); graphFails = new GraphError(403, "Authorization_RequestDenied", "Graph 403 on PATCH /users/x: Authorization_RequestDenied");
       res = await A.entraProposalApply(req(admin, { id: "1" }), ctx);
       eq([res.status, res.jsonBody.status, res.jsonBody.applyOutcome, res.jsonBody.error], [502, "failed", "failed", "Graph 403: Authorization_RequestDenied"]);
+      reset(); graphFails = new GraphError(403, "Authorization_RequestDenied", "x");
+      res = await A.entraProposalAccept(req(admin, { id: "1" }), ctx);
+      eq([res.status, res.jsonBody.status, res.jsonBody.applyOutcome, res.jsonBody.error, res.jsonBody.proposalId], [502, "failed", "failed", "Graph 403: Authorization_RequestDenied", 1], "accept that fails to apply: 502 carries error + status + the proposal");
       eq(graphCalls.length, 2, "one attempt"); eq(db.userUpdates, [], "snapshot untouched");
       reset(); db.proposals.set(1, proposal(1, { status: "accepted" })); graphUsers = {};
       res = await A.entraProposalApply(req(admin, { id: "1" }), ctx);
@@ -297,6 +303,10 @@ module.exports = async () => {
       eq(audits.map(a => [a.endpoint, a.employeeId, a.fields, a.outcome]), [["POST /hub/entra/groups/{gid}/members", "E100", ["group_add"], "allowed"]]);
       eq(db.manual.length, 1); eq([db.manual[0].employee_id, db.manual[0].kind, db.manual[0].group_id, db.manual[0].source, db.manual[0].status], ["E100", "group_add", GID, "manual", "applied"]);
       eq(db.manual[0].dedupe_hash.toString("hex"), dedupeHash("E100", "group_add", null, GID, null));
+      reset(); db.proposals.set(7, proposal(7, { kind: "group_add", field: null, group_id: GID, current_value: null, proposed_value: null, source: "rule", dedupe_hash: Buffer.from(dedupeHash("E100", "group_add", null, GID, null), "hex") }));
+      res = await A.entraGroupMembersAdd(req(admin, { gid: GID }, { employeeIds: ["E100"] }), ctx);
+      eq(res.jsonBody.results[0].outcome, "added"); eq(db.proposals.get(7).status, "stale", "the open proposal for the same change is stale once done by hand");
+      eq(db.manual[0].status, "applied", "the manual row itself is untouched");
       reset(false);
       res = await A.entraGroupMembersAdd(req(admin, { gid: GID }, { employeeIds: ["E100"] }), ctx);
       eq([res.status, res.jsonBody.error], [409, "writes_disabled"]); eq(graphCalls, []); eq(audits.length, 0);
@@ -362,6 +372,8 @@ module.exports = async () => {
       res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E300", userObjectId: UID2 }), ctx);
       eq([res.status, res.jsonBody.error, res.jsonBody.employeeId], [409, "user_already_linked", "E200"]); eq(audits.length, 0);
       eq((await A.entraLinkCreate(req(admin, {}, { employeeId: "E300", userObjectId: "33333333-3333-3333-3333-333333333333" }), ctx)).status, 404);
+      res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E999", userObjectId: UID3 }), ctx);
+      eq([res.status, res.jsonBody.error], [404, "Employee not in the hub directory"]); eq(audits.length, 0);
       reset(); db.proposals.set(1, proposal(1, { employee_id: "E200", user_object_id: UID2 }));
       res = await A.entraLinkCreate(req(admin, {}, { employeeId: "E200", userObjectId: UID2 }), ctx);
       eq([res.status, res.jsonBody.method], [200, "manual"]); eq(audits.length, 0); eq(db.proposals.get(1).status, "proposed", "re-posting the same manual link changes nothing");
@@ -375,6 +387,9 @@ module.exports = async () => {
       eq((await A.entraLinkDelete(req(admin, { employeeId: "E100" }), ctx)).status, 404);
       assert(/DELETE FROM entra.links WHERE employee_id = @employeeId/.test(S.LINK_MANUAL_SQL) && /status = 'stale'/.test(S.LINK_MANUAL_SQL) && /'manual'/.test(S.LINK_MANUAL_SQL));
       assert(/JOIN entra.proposals p ON p.proposal_id = r.proposal_id/.test(S.REJECTIONS_PRUNE_SQL) && /p.employee_id IN \(SELECT value FROM OPENJSON\(@employees\)\)/.test(S.REJECTIONS_PRUNE_SQL), "rejections are pruned per compared employee only");
+      assert(/r.rejected_utc < \(SELECT started_utc FROM entra.sync_runs WHERE run_id = @runId\)/.test(S.REJECTIONS_PRUNE_SQL), "and only those recorded before the run started");
+      eq(S.OPEN_STATUS_LIST, "'proposed', 'accepted', 'applying', 'blocked'"); eq(S.STALEABLE_STATUS_LIST, "'proposed', 'accepted', 'blocked'");
+      for (const q of [S.PROPOSALS_STALE_SQL, S.STALE_EMPLOYEE_PROPOSALS_SQL, S.STALE_BY_HASH_SQL, S.LINK_MANUAL_SQL, S.LINK_DELETE_SQL, S.RULE_DELETE_SQL]) assert(q.includes(`status IN (${S.STALEABLE_STATUS_LIST})`), "one source of truth for the stale lists");
     });
     await test("store SQL: proposal upsert matches open rows by hash only, never reopens decided rows; stale never touches applying; auto links never overwrite manual", () => {
       assert(/ON t.dedupe_hash = s.dedupe_hash AND t.status IN \('proposed', 'accepted', 'applying', 'blocked'\)/.test(S.PROPOSALS_UPSERT_SQL));

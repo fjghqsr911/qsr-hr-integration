@@ -28,6 +28,14 @@ module.exports = async () => {
     eq(computeDesired(employee({ storeCity: null }), { headOfficeCity: null }).officeLocation, null, "no city known: leave officeLocation alone");
     eq(computeDesired(employee({ jobTitle: null }), { headOfficeCity: null }).jobTitle, null);
   });
+  await test("computeDesired: a store is a store by its code (T00037, W06302, T22446), not by having a ref.stores row; a store without a name yet -> department and city left alone", () => {
+    const noRow = employee({ store: "W06302", storeName: null, storeCity: null, department: null });
+    eq(computeDesired(noRow, { headOfficeCity: "Toronto" }), { jobTitle: "General Manager", department: null, officeLocation: null, accountEnabled: true, dueDate: null });
+    eq(kinds(run({ employee: noRow, user: user({ department: "Whatever", officeLocation: "Elsewhere" }) })), [], "no department or office proposal until ref.stores knows the store");
+    eq(computeDesired(employee({ store: "T22446", storeName: "Bank Street", storeCity: "Ottawa" }), { headOfficeCity: null }).department, "Bank Street");
+    eq(computeDesired(employee({ store: "t00037" }), { headOfficeCity: null }).department, "Main Street", "code case ignored");
+    for (const code of ["HR", "FIN", "OPS", "T123", null]) eq(computeDesired(employee({ store: code, storeName: null, storeCity: null }), { headOfficeCity: null }).department, HEAD_OFFICE, `${code} is head office`);
+  });
   await test("computeDesired: head office -> Head Office, city only from ENTRA_HEAD_OFFICE_CITY; on leave stays enabled", () => {
     const ho = employee({ store: "HR", storeName: null, storeCity: null, department: HEAD_OFFICE });
     eq(computeDesired(ho, { headOfficeCity: null }), { jobTitle: "General Manager", department: "Head Office", officeLocation: null, accountEnabled: true, dueDate: null });
@@ -94,6 +102,16 @@ module.exports = async () => {
     r = run({ rules: [rule({ jobCodes: "ASM", mode: "add_and_remove" })], groups, memberships: new Set(["g-1"]) });
     eq(kinds(r), ["group_remove:g-1"]); eq(r.create[0].ruleId, 1);
     eq(kinds(run({ rules: [rule({ jobCodes: "ASM" }), rule({ ruleId: 2, jobCodes: "GM", mode: "add_and_remove" })], groups, memberships: new Set(["g-1"]) })), [], "any matching rule keeps the member");
+  });
+  await test("diff: a rule-driven group_remove for a leaver carries the disable due date (date_last_worked, else termination_date, else today)", () => {
+    const groups = new Map([group("g-1")]);
+    const t = employee({ employeeStatus: "T", terminationDate: "2026-11-10", dateLastWorked: "2026-11-07" });
+    let r = run({ employee: t, rules: [rule({ mode: "add_and_remove" })], groups, memberships: new Set(["g-1"]) });
+    eq(kinds(r), ["disable", "group_remove:g-1"]); eq(r.create.map(c => c.dueDate), ["2026-11-07", "2026-11-07"]);
+    r = run({ employee: employee({ employeeStatus: "T", terminationDate: null, dateLastWorked: null }), user: user({ accountEnabled: false }), rules: [rule({ mode: "add_and_remove" })], groups, memberships: new Set(["g-1"]) });
+    eq(kinds(r), ["group_remove:g-1"]); eq(r.create[0].dueDate, today);
+    r = run({ employee: employee({ jobCode: "ASM" }), rules: [rule({ mode: "add_and_remove" })], groups, memberships: new Set(["g-1"]) });
+    eq(kinds(r), ["group_remove:g-1"]); eq(r.create[0].dueDate, null, "an active employee leaving a rule is removed at once");
   });
   await test("diff: rule statuses csv -> a leaver no longer matches (A,L default) and is removed under add_and_remove; predicates are AND, case-insensitive", () => {
     const groups = new Map([group("g-1")]);

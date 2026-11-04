@@ -17,7 +17,10 @@ export async function snapshotEntra(graph: GraphClient, store: EntraStore, opts:
     opts.log(`users @${domain}: ${users.length}`);
   }
   const users = [...byId.values()];
+  // an empty or collapsed listing would mark everyone missing, stale every proposal and drop every rejection: refuse it
   if (!users.length) throw new Error(`Graph listed no users for ${opts.domains.join(", ")}: snapshot not written (check ENTRA_ACCOUNT_DOMAINS and the Graph permissions)`);
+  const previous = await store.activeUserCount();
+  if (previous > 0 && users.length < previous / 2) throw new Error(`Graph listed ${users.length} users but the previous snapshot has ${previous}: listing collapsed, snapshot not written`);
   await store.upsertUsers(users, opts.fetchedUtc);
   const usersMissing = await store.markMissingUsers(opts.fetchedUtc);
 

@@ -79,7 +79,7 @@ export async function runEntraSync(store: EntraStore, graph: GraphClient, opts: 
 
     counts.proposalsNew = await store.upsertProposals([...create, ...blocked]);
     counts.proposalsStale = await store.staleProposals(stale);
-    const pruned = await store.pruneRejections(compared, [...suppressed]);
+    const pruned = await store.pruneRejections(runId, compared, [...suppressed]);     // only rejections recorded before this run started
     opts.log(`compare: candidates=${create.length} blocked=${blocked.length} new=${counts.proposalsNew} stale=${counts.proposalsStale} rejections_cleared=${pruned}`);
 
     await store.finishRun(runId, "succeeded", counts);

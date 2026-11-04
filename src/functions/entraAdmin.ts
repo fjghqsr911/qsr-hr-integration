@@ -71,6 +71,9 @@ const fieldsOf = (p: ProposalRow) => [p.field ?? p.kind];
 /** The response for a proposal after an action: the row plus what happened to the apply, if one was attempted. */
 type ApplyNote = ApplyOutcome | "due_later" | null;
 const proposalBody = (p: ProposalRow, applyOutcome: ApplyNote) => ({ ...publicProposal(p), applyOutcome });
+/** 200 with the proposal, or 502 with the proposal plus an explicit error line when the Graph write failed. */
+const proposalResponse = (p: ProposalRow, applyOutcome: ApplyNote, httpStatus: number): HttpResponseInit =>
+  ok({ ...proposalBody(p, applyOutcome), ...(httpStatus === 502 ? { error: p.error ?? "apply failed" } : {}) }, httpStatus);
 const conflict = (p: ProposalRow, need: string): HttpResponseInit =>
   ({ status: 409, headers: NO_STORE, jsonBody: { error: `Proposal is ${p.status}; ${need}`, status: p.status } });
 
@@ -118,7 +121,7 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
 
     if (action === "accept") {
       const r = await acceptAndApply(d, p, by, log);
-      return r.httpStatus === 409 ? conflict(r.proposal, "accept needs proposed") : ok(proposalBody(r.proposal, r.applyOutcome), r.httpStatus);
+      return r.httpStatus === 409 ? conflict(r.proposal, "accept needs proposed") : proposalResponse(r.proposal, r.applyOutcome, r.httpStatus);
     }
     if (action === "reject") {
       const rejected = await d.store.reject(id, by);
@@ -129,7 +132,7 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
     if (r.outcome === "conflict" || r.outcome === "not_due") return r.proposal ? conflict(r.proposal, "apply needs accepted and due") : notFound("Proposal not found");
     if (r.outcome === "writes_disabled") return writesDisabled();
     if (r.outcome === "not_found") return notFound("Proposal not found");
-    return ok(proposalBody(r.proposal!, r.outcome), r.outcome === "failed" ? 502 : 200);
+    return proposalResponse(r.proposal!, r.outcome, r.outcome === "failed" ? 502 : 200);
   });
 }
 
@@ -214,7 +217,9 @@ async function groupMembers(req: HttpRequest, ctx: InvocationContext, kind: "gro
         if (kind === "group_add") await d.graph.addGroupMember(gid, link.userObjectId);
         else await d.graph.removeGroupMember(gid, link.userObjectId);
         await d.store.setMember(gid, link.userObjectId, kind === "group_add");
-        await d.store.insertManualApplied({ employeeId, userObjectId: link.userObjectId, kind, groupId: gid, hash: dedupeHash(employeeId, kind, null, gid, null), by });
+        const hash = dedupeHash(employeeId, kind, null, gid, null);
+        const done = await d.store.insertManualApplied({ employeeId, userObjectId: link.userObjectId, kind, groupId: gid, hash, by });
+        await d.store.staleByHash(hash, done?.proposalId ?? 0);              // the queue stops offering a change done by hand
         results.push({ employeeId, outcome: kind === "group_add" ? "added" : "removed" });
       } catch (e: any) {
         const text = e instanceof GraphError ? `Graph ${e.status}${e.code ? `: ${e.code}` : ""}` : errText(e);
@@ -343,6 +348,7 @@ export async function entraLinkCreate(req: HttpRequest, ctx: InvocationContext):
   ctx.log(`[entra] link employee=${employeeId} user=${userObjectId} by=${by}`);
 
   return withDeps(ctx, "link", async (d) => {
+    if (!(await d.store.directoryRow(employeeId))) return notFound("Employee not in the hub directory");
     const user = await d.store.user(userObjectId);
     if (!user) return notFound("Entra user not in the snapshot");
     const taken = await d.store.linkForUser(userObjectId);

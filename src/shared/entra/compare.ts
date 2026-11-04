@@ -14,6 +14,9 @@ export type ProposalStatus = "proposed" | "accepted" | "applying" | "applied" | 
 export const OPEN_STATUSES: readonly ProposalStatus[] = ["proposed", "accepted", "applying", "blocked"];
 export const ATTRIBUTE_FIELDS: readonly AttributeField[] = ["jobTitle", "department", "officeLocation"];
 export const HEAD_OFFICE = "Head Office";
+/** org_level2 codes that are stores (T00037, W06302, T22446); anything else (HR, FIN, OPS ...) is head office. */
+export const STORE_CODE = /^[A-Z]\d{4,}$/;
+export const isStoreCode = (code: string | null | undefined) => STORE_CODE.test(String(code ?? "").trim().toUpperCase());
 
 export interface DirectoryRow {
   employeeId: string; employeeNumber: string | null; companyId: string | null; companyCount: number; employeeStatus: string | null;
@@ -43,7 +46,7 @@ export interface OpenProposal { proposalId: number; status: ProposalStatus; dedu
 
 export interface Desired {
   jobTitle: string | null;                 // null = leave alone
-  department: string;
+  department: string | null;               // null = store without a ref.stores row yet: leave alone
   officeLocation: string | null;           // null = leave alone (no city known)
   accountEnabled: boolean;
   dueDate: string | null;                  // disable date for a termination (date_last_worked, else termination_date)
@@ -91,12 +94,12 @@ export function dedupeHash(employeeId: string, kind: ProposalKind, field: string
 
 /** What UKG wants the Entra user to look like. */
 export function computeDesired(row: DirectoryRow, opts: { headOfficeCity: string | null }): Desired {
-  const atStore = !!norm(row.storeName) && !!norm(row.store);
+  const atStore = isStoreCode(row.store);
   const status = norm(row.employeeStatus).toUpperCase();
   const active = ACTIVE.has(status);
   return {
     jobTitle: norm(row.jobTitle) || null,
-    department: atStore ? norm(row.storeName) : HEAD_OFFICE,
+    department: atStore ? (norm(row.storeName) || null) : HEAD_OFFICE,
     officeLocation: atStore ? (norm(row.storeCity) || null) : (opts.headOfficeCity ? norm(opts.headOfficeCity) : null),
     accountEnabled: active,
     dueDate: status === "T" ? (row.dateLastWorked ?? row.terminationDate ?? null) : null
@@ -165,7 +168,8 @@ export function diff(input: DiffInput): DiffResult {
       add({ kind: "group_add", field: null, groupId, currentValue: null, proposedValue: null, dueDate: null, source: "rule", ruleId: matching.ruleId });
     } else if (!matching && member) {
       const remover = groupRules.find(r => r.mode === "add_and_remove");
-      if (remover) add({ kind: "group_remove", field: null, groupId, currentValue: null, proposedValue: null, dueDate: null, source: "rule", ruleId: remover.ruleId });
+      // a leaver keeps group access until the last shift: same due date as the disable
+      if (remover) add({ kind: "group_remove", field: null, groupId, currentValue: null, proposedValue: null, dueDate: status === "T" ? (desired.dueDate ?? today) : null, source: "rule", ruleId: remover.ruleId });
     }
   }
 

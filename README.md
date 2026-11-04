@@ -163,7 +163,7 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `17-destination-codes-clearview.sql` | Re-runnable MERGE template for the job / termination / category / company pairs a person decides, one row per organization (`company` = `SWN6T` or `SWNGK`; empty = shared). Fill its VALUES block from the `discover` report (stores are paired automatically by `discover`, not here) |
 | `18-ref-stores.sql` | `ref.stores`: store names, brands, districts, cities (filled from the store CSV) for the monitor directory and the Entra department / officeLocation |
 | `19-directory-view.sql` | `rpt.v_directory`: one row per employee with store name and city, job title and **work email** (the only contact column; personal details stay out of reach of the monitor) |
-| `20-entra-tables.sql` | Schema `entra`: `users`, `groups`, `group_members` (snapshot), `links`, `link_issues`, `rules`, `proposals`, `rejections`, `sync_runs`; grants the Function App user the schema plus SELECT on `ref.stores`, `rpt.v_directory` and `rpt.workforce_events`. Run after 18 and 19 and before the first Entra sync; the Diagnostics tab's grants check lists what is missing |
+| `20-entra-tables.sql` | Schema `entra`: `users`, `groups`, `group_members` (snapshot), `links`, `link_issues`, `rules`, `proposals`, `rejections`, `sync_runs`; grants the Function App user the schema plus SELECT on `ref.stores`, `rpt.v_directory` and `rpt.workforce_events`. Run after 18 and 19 and before the first Entra sync; the Diagnostics tab's entra row reports these objects and grants (skipped until they exist) |
 
 13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
 is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
@@ -312,7 +312,7 @@ for a user holding a directory role, say) end as `failed` with status + code onl
 adds the `Entra.Admin` app role to the hrint-api registration (existing roles kept) and assigns it to `ENTRA_ADMINS`.
 
 **Order of operations**: scripts 18 (with the store CSV), 19, 20 on `sqldb-hrint` -> `01-entra-graph-permissions.sh` -> `ENTRA_SYNC_ENABLED=true` ->
-`POST /api/hub/entra/sync` and check the `entra` row of `GET /api/hub/diagnostics` (token + `GET /users?$top=1` probe, last run age, counts: users,
+`POST /api/hub/entra/sync` and check the `entra` row of `GET /api/hub/diagnostics` (token + `GET /users?$top=1` probe, its own objects + grants check, last run age, counts: users,
 linked, unlinked with email, orphans, proposed, due, failed, blocked) -> `02-entra-admin-role.sh` -> review proposals -> `ENTRA_WRITE_ENABLED=true`.
 
 Tests: `test/compare.test.js`, `test/link.test.js`, `test/graph.test.js` (stubbed fetch), `test/entraSync.test.js`, `test/entraAdmin.test.js`; mocks only.

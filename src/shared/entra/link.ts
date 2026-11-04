@@ -54,7 +54,7 @@ export function computeLinks(employees: DirectoryRow[], users: EntraUserSnapshot
     const link = linkByEmployee.get(emp.employeeId);
     if (link) {
       const u = present.get(link.userObjectId);
-      if (u && email && lower(u.upn) !== email && lower(u.mail) !== email)
+      if (u && email && link.method !== "manual" && lower(u.upn) !== email && lower(u.mail) !== email)   // a manual link exists because the emails differ
         issues.push({ employeeId: emp.employeeId, userObjectId: link.userObjectId, kind: "email_changed", detail: `work email no longer matches the linked account (${link.method})` });
       continue;                                                                 // linked: nothing else to do
     }

@@ -40,8 +40,13 @@ export const GRANTS: ReadonlyArray<{ column: string; object: string; permission:
   { column: "xrefUpdate", object: "xref.employees", permission: "UPDATE" },
   { column: "destinationCodesInsert", object: "ref.destination_codes", permission: "INSERT" },
   { column: "workforceEventsSelect", object: "rpt.workforce_events", permission: "SELECT" },
-  { column: "employmentCurrentSelect", object: "stage.employment_current", permission: "SELECT" },
-  // Entra sync (provisioning/18, 19, 20)
+  { column: "employmentCurrentSelect", object: "stage.employment_current", permission: "SELECT" }
+];
+export const GRANTS_SQL = `SELECT ${GRANTS.map(g => `HAS_PERMS_BY_NAME('${g.object}','OBJECT','${g.permission}') AS ${g.column}`).join(", ")};`;
+
+/** What the Entra sync needs (provisioning/18, 19, 20). Checked by the entra component, not the shared grants row: these objects do not
+ *  exist before those scripts run, and HAS_PERMS_BY_NAME answers NULL for a missing object. */
+export const ENTRA_GRANTS: ReadonlyArray<{ column: string; object: string; permission: string }> = [
   { column: "entraUsersInsert", object: "entra.users", permission: "INSERT" },
   { column: "entraProposalsUpdate", object: "entra.proposals", permission: "UPDATE" },
   { column: "entraLinksDelete", object: "entra.links", permission: "DELETE" },
@@ -49,7 +54,8 @@ export const GRANTS: ReadonlyArray<{ column: string; object: string; permission:
   { column: "storesSelect", object: "ref.stores", permission: "SELECT" },
   { column: "directorySelect", object: "rpt.v_directory", permission: "SELECT" }
 ];
-export const GRANTS_SQL = `SELECT ${GRANTS.map(g => `HAS_PERMS_BY_NAME('${g.object}','OBJECT','${g.permission}') AS ${g.column}`).join(", ")};`;
+export const ENTRA_GRANTS_SQL = `SELECT ${ENTRA_GRANTS.map(g =>
+  `OBJECT_ID('${g.object}') AS ${g.column}Exists, HAS_PERMS_BY_NAME('${g.object}','OBJECT','${g.permission}') AS ${g.column}`).join(", ")};`;
 export const CODES_COUNT_SQL = `SELECT code_type, COUNT(*) AS n FROM ref.destination_codes WHERE destination = @destination GROUP BY code_type;`;
 
 /** Entra counts (one row) and the latest sync run. Read-only. */
@@ -206,14 +212,28 @@ export async function checkClearview(now: Date = new Date()): Promise<Component 
 
 /** The Entra sync: token + GET /users?$top=1 probe (skipped unless the sync is enabled or a snapshot exists), age of the
  *  last entra.sync_runs row (warn past 26 h when enabled), counts, write switch. Never writes to Graph. */
-export async function checkEntra(now: Date = new Date()): Promise<Component> {
+export async function checkEntra(admin: boolean = false, now: Date = new Date()): Promise<Component> {
   const enabled = config.entraSyncEnabled, writeEnabled = config.entraWriteEnabled;
   const notes: string[] = [];
   let counts: Record<string, number> | null = null;
   let lastRun: { runId: string; startedUtc: string; finishedUtc: string | null; status: string; trigger: string; ageHours: number } | null = null;
+  let grants: Component | { status: "skipped"; detail: string } = { status: "skipped", detail: "not checked" };
+  let provisioned = false;
   let sqlError: string | null = null;
   try {
     const pool = await getSharedHubPool();
+    // objects + grants first: before provisioning/18-20 the tables do not exist and the counts query would only throw
+    const g: any = await pool.request().query(ENTRA_GRANTS_SQL);
+    const grow: any = g.recordset?.[0] ?? {};
+    const absent = ENTRA_GRANTS.filter(x => grow[`${x.column}Exists`] === null || grow[`${x.column}Exists`] === undefined).map(x => x.object);
+    if (absent.length) {
+      grants = { status: "skipped", detail: `not provisioned yet (run provisioning/18, 19, 20): ${[...new Set(absent)].join(", ")}` };
+    } else {
+      provisioned = true;
+      const missing = ENTRA_GRANTS.filter(x => Number(grow[x.column]) !== 1).map(x => `${x.permission} on ${x.object}`);
+      grants = missing.length ? { status: "fail", detail: `${missing.length} of ${ENTRA_GRANTS.length} grant(s) missing`, ...(admin ? { missing } : {}) } : { status: "pass" };
+    }
+    if (!provisioned) throw Object.assign(new Error("entra tables not provisioned"), { notProvisioned: true });
     const c: any = await pool.request().input("today", sql.Date, torontoToday(now)).query(ENTRA_COUNTS_SQL);
     const row = c.recordset?.[0] ?? {};
     const n = (v: any) => Number(v ?? 0);
@@ -227,8 +247,8 @@ export async function checkEntra(now: Date = new Date()): Promise<Component> {
                   status: String(run.status), trigger: String(run.trigger_kind), ageHours: Math.round((now.getTime() - started.getTime()) / 36_000) / 100 };
     }
   } catch (e: any) {
-    resetSharedHubPool();
-    sqlError = errText(e);
+    if (e?.notProvisioned) notes.push("entra tables not provisioned: run provisioning/18, 19, 20");
+    else { resetSharedHubPool(); sqlError = errText(e); }
   }
 
   const hasSnapshot = (counts?.users ?? 0) > 0;
@@ -246,10 +266,10 @@ export async function checkEntra(now: Date = new Date()): Promise<Component> {
   if (counts && counts.failed > 0) notes.push(`${counts.failed} proposal(s) failed to apply`);
   if (!writeEnabled) notes.push("ENTRA_WRITE_ENABLED is not \"true\": accepted proposals are not pushed to Entra");
 
-  const status: ComponentStatus = api.status === "fail" || (sqlError && enabled) ? "fail"
-    : (sqlError || !enabled || runStale || lastRun?.status === "failed" || (counts?.failed ?? 0) > 0) ? "warn" : "pass";
+  const status: ComponentStatus = api.status === "fail" || grants.status === "fail" || ((sqlError || !provisioned) && enabled) ? "fail"
+    : (sqlError || !provisioned || !enabled || runStale || lastRun?.status === "failed" || (counts?.failed ?? 0) > 0) ? "warn" : "pass";
   const detail = [sqlError ? `entra tables unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
-  return { status, enabled, writeEnabled, api, lastRun, counts, ...(detail ? { detail } : {}) };
+  return { status, enabled, writeEnabled, api, grants, lastRun, counts, ...(detail ? { detail } : {}) };
 }
 
 // ---------------------------------------------------------------- endpoint ----------------------------------------------------------------
@@ -265,7 +285,7 @@ export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): 
   };
   const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview, entra] = await Promise.all([
     guard(checkSettings(admin)), guard(checkSql()), guard(checkGrants(admin)), guard(checkAudit()),
-    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview()), guard(checkEntra())
+    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview()), guard(checkEntra(admin))
   ]);
 
   const body = {
