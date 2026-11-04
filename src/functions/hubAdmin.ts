@@ -28,6 +28,13 @@ WHEN NOT MATCHED THEN INSERT (destination, store, mode, changed_utc, changed_by)
                       VALUES (@destination, @store, @mode, SYSUTCDATETIME(), @changedBy)
 OUTPUT inserted.destination, inserted.store, inserted.mode, inserted.changed_utc, inserted.changed_by;`;
 
+/** Switching a store to shadow or live queues its recent events that were built while it was off (provisioning/22). */
+export const QUEUE_STORE_EVENTS_SQL = `
+DECLARE @n int;
+EXEC @n = rpt.usp_queue_store_events @destination = @destination, @store = @store, @since = @since;
+SELECT @n AS queued;`;
+const QUEUE_DAYS_DEFAULT = 14, QUEUE_DAYS_MAX = 365;
+
 const DELIVERY_COLUMNS = `delivery_id, destination, kind, employee_id, event_type, action, effective_date, store, status,
        attempts, next_attempt_utc, queued_utc, finished_utc, last_error`;
 
@@ -78,9 +85,13 @@ export async function hubStoreMode(req: HttpRequest, ctx: InvocationContext): Pr
   try { body = await req.json(); } catch { return { status: 400, jsonBody: { error: "Body must be JSON" } }; }
   const mode = typeof body?.mode === "string" ? body.mode.toLowerCase() : "";
   if (!(MODES as readonly string[]).includes(mode)) return { status: 400, jsonBody: { error: "mode must be off, shadow or live" } };
+  // queueDays: how far back to queue the store's existing events once it is on (0 = none). Ignored for off.
+  const queueDaysRaw = body?.queueDays === undefined || body?.queueDays === null ? QUEUE_DAYS_DEFAULT : body.queueDays;
+  if (!Number.isInteger(queueDaysRaw) || queueDaysRaw < 0 || queueDaysRaw > QUEUE_DAYS_MAX) return { status: 400, jsonBody: { error: `queueDays must be an integer from 0 to ${QUEUE_DAYS_MAX}` } };
+  const queueDays: number = mode === "off" ? 0 : queueDaysRaw;
 
-  ctx.log(`store-mode ${destination}/${store} -> ${mode} by=${describeCaller(caller)}`);
-  const audit = { caller, endpoint: STORE_MODE_ENDPOINT, employeeId: "", action: "write" as const, fields: ["mode"] };
+  ctx.log(`store-mode ${destination}/${store} -> ${mode} queueDays=${queueDays} by=${describeCaller(caller)}`);
+  const audit = { caller, endpoint: STORE_MODE_ENDPOINT, employeeId: "", action: "write" as const, fields: queueDays > 0 ? ["mode", "queue"] : ["mode"] };
 
   // Audit BEFORE changing anything. If this throws, nothing is written and the caller gets 503.
   try { await writeAudit({ ...audit, outcome: "allowed" }); }
@@ -96,7 +107,15 @@ export async function hubStoreMode(req: HttpRequest, ctx: InvocationContext): Pr
       .query(STORE_MODE_SQL);
     const row = result.recordset?.[0];
     if (!row) throw new Error("upsert returned no row");
-    return { headers: NO_STORE, jsonBody: mapStoreModeRow(row) };
+    let queued = 0;
+    if (queueDays > 0) {
+      const since = new Date(Date.now() - queueDays * 86_400_000);
+      const q: any = await pool.request().input("destination", sql.VarChar(20), destination).input("store", sql.VarChar(20), store)
+        .input("since", sql.DateTime2(0), since).query(QUEUE_STORE_EVENTS_SQL);
+      queued = Number(q.recordset?.[0]?.queued ?? 0);
+      ctx.log(`store-mode ${destination}/${store}: queued ${queued} event(s) entered since ${since.toISOString().slice(0, 10)}`);
+    }
+    return { headers: NO_STORE, jsonBody: { ...mapStoreModeRow(row), queued, queueDays } };
   } catch (e: any) {
     resetSharedHubPool();
     ctx.error(`store-mode failed ${destination}/${store}: ${String(e?.message ?? "error").slice(0, 200)}`);
