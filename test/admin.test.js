@@ -52,9 +52,9 @@ module.exports = async () => {
     eq((await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, "bad-json"), ctx)).status, 400);
     eq(pool.calls.length, 0); eq(audits.length, 0);
   });
-  await test("store mode: upserts with caller as changed_by, audits the write, queues recent events, returns the row", async () => {
+  await test("store mode: upserts with caller as changed_by, audits the write, queues recent events when asked, returns the row", async () => {
     reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow({ mode: "live" })] } : { recordset: [{ queued: 3 }] }));
-    const res = await hubStoreMode(req(admin, { destination: "Clearview", store: "t01647" }, { mode: "LIVE" }), ctx);
+    const res = await hubStoreMode(req(admin, { destination: "Clearview", store: "t01647" }, { mode: "LIVE", queueDays: 14 }), ctx);
     eq(res.status ?? 200, 200);
     eq(res.jsonBody, { destination: "clearview", store: "T01647", mode: "live", changedUtc: "2026-10-30T12:00:00.000Z", changedBy: "delegated:fraser@qsrgroup.ca", queued: 3, queueDays: 14 });
     eq(pool.calls.length, 2); eq(pool.calls[0].text, STORE_MODE_SQL); eq(pool.calls[1].text, QUEUE_STORE_EVENTS_SQL);
@@ -68,10 +68,10 @@ module.exports = async () => {
        ["PUT /hub/stores/{destination}/{store}/mode", "", "write", ["mode", "queue"], "allowed"]);
     eq(audits[0].caller.user, "fraser@qsrgroup.ca");
   });
-  await test("store mode: queueDays 0 or mode off skips the queue; queueDays validated", async () => {
+  await test("store mode: no queueDays (the default) or mode off skips the queue; queueDays validated", async () => {
     reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow()] } : { recordset: [{ queued: 9 }] }));
-    let res = await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "shadow", queueDays: 0 }), ctx);
-    eq(res.jsonBody.queued, 0); eq(pool.calls.length, 1); eq(audits[0].fields, ["mode"]);
+    let res = await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "shadow" }), ctx);
+    eq(res.jsonBody.queued, 0); eq(res.jsonBody.queueDays, 0); eq(pool.calls.length, 1, "nothing queued unless asked"); eq(audits[0].fields, ["mode"]);
     reset(); pool = fakePool((text) => (text === STORE_MODE_SQL ? { recordset: [modeRow({ mode: "off" })] } : { recordset: [{ queued: 9 }] }));
     res = await hubStoreMode(req(admin, { destination: "clearview", store: "T01647" }, { mode: "off", queueDays: 30 }), ctx);
     eq(res.jsonBody.queued, 0); eq(res.jsonBody.queueDays, 0); eq(pool.calls.length, 1);

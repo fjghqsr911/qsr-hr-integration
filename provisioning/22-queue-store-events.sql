@@ -4,7 +4,9 @@
 -- for a store that went shadow Oct 31 got no delivery). This procedure queues a pending delivery for every current
 -- event of the store (new store, or the old store of a termination or move) that has no delivery for the destination
 -- yet and was entered in UKG on or after @since. Same store choice as the rebuild: the new store first, then the old.
--- Returns the number of rows queued. The last block runs it once for every store already in shadow or live.
+-- Returns the number of rows queued. hrint-api calls it only when the store mode request carries queueDays > 0; the
+-- default is 0 because the outgoing integration still carries current changes (nothing to backfill when a store is
+-- switched on). The last block can run it once for every store already in shadow or live; it is off by default.
 -- Run in the Azure portal Query editor on sqldb-hrint (open from the database, not master) as the Entra admin.
 -- Safe to re-run: a second run queues nothing (every event already has a delivery). Comments contain no apostrophes.
 
@@ -34,9 +36,9 @@ BEGIN
     EXEC sp_executesql @sql;
 END;
 
--- One-off backfill for the stores already switched on: events entered in UKG in the last @backfill_days days.
--- Set @backfill_days to 0 to skip. Every row created here is pending for a shadow store: a masked payload, nothing sent.
-DECLARE @backfill_days int = 14;
+-- Optional one-off backfill for the stores already switched on: events entered in UKG in the last @backfill_days days.
+-- Off (0) by default; set it to e.g. 14 only when the hub is the integration of record for those stores.
+DECLARE @backfill_days int = 0;
 DECLARE @since datetime2(0) = DATEADD(day, -@backfill_days, SYSUTCDATETIME());
 DECLARE @results TABLE (destination varchar(20), store varchar(20), queued int);
 IF @backfill_days > 0
