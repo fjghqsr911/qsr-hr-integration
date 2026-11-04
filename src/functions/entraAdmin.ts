@@ -15,6 +15,8 @@ import { dedupeHash, groupManageable, torontoToday } from "../shared/entra/compa
 //
 //   POST   /api/hub/entra/proposals/{id}/accept     proposed -> accepted, then applied at once unless due later (disable on date last worked)
 //   POST   /api/hub/entra/proposals/{id}/reject     proposed | accepted -> rejected (+ rejection row: not proposed again until the difference goes)
+//   POST   /api/hub/entra/proposals/{id}/withdraw   accepted -> proposed (the acceptance undone; nothing recorded, the row waits for a decision again)
+//   POST   /api/hub/entra/proposals/{id}/reconsider rejected -> proposed and the rejection row deleted; 409 open_twin when an open row already carries the change
 //   POST   /api/hub/entra/proposals/{id}/apply      accepted -> applying -> applied | failed | stale; 409 before the due date
 //   POST   /api/hub/entra/proposals/decide          { ids: [...], action: "accept" | "reject" }   bulk, max ENTRA_MAX_DECIDE, per id result
 //   POST   /api/hub/entra/groups/{gid}/members      { employeeIds: [...] }   add now (Graph), recorded as manual applied proposals
@@ -88,7 +90,9 @@ async function acceptAndApply(d: Deps, p: ProposalRow, by: string, log: (m: stri
 }
 
 // ---------------------------------------------------------------- proposals ----------------------------------------------------------------
-type ProposalAction = "accept" | "reject" | "apply";
+type ProposalAction = "accept" | "reject" | "withdraw" | "reconsider" | "apply";
+const openTwin = (p: ProposalRow): HttpResponseInit =>
+  ({ status: 409, headers: NO_STORE, jsonBody: { error: "open_twin", detail: "an open proposal already carries this change", status: p.status } });
 
 async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: ProposalAction): Promise<HttpResponseInit> {
   const auth = adminAuth(req);
@@ -109,6 +113,10 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
       if (p.status !== "proposed") return conflict(p, "accept needs proposed");
     } else if (action === "reject") {
       if (p.status !== "proposed" && p.status !== "accepted" && !isStuck(p)) return conflict(p, "reject needs proposed or accepted");
+    } else if (action === "withdraw") {
+      if (p.status !== "accepted") return conflict(p, "withdraw needs accepted");
+    } else if (action === "reconsider") {
+      if (p.status !== "rejected") return conflict(p, "reconsider needs rejected");
     } else {
       if (!isClaimable(p)) return conflict(p, "apply needs accepted");
       if (!isDue(p, d.today)) return { status: 409, headers: NO_STORE, jsonBody: { error: `Proposal is due on ${p.dueDate}`, status: p.status, dueDate: p.dueDate } };
@@ -128,6 +136,19 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
       if (!rejected) { const again = (await d.store.proposal(id)) ?? p; return conflict(again, "reject needs proposed or accepted"); }
       return ok(proposalBody(rejected, null));
     }
+    if (action === "withdraw") {
+      const withdrawn = await d.store.withdraw(id, by);
+      if (!withdrawn) { const again = (await d.store.proposal(id)) ?? p; return conflict(again, "withdraw needs accepted"); }
+      return ok(proposalBody(withdrawn, null));
+    }
+    if (action === "reconsider") {
+      const reconsidered = await d.store.reconsider(id, by);
+      if (!reconsidered) {                                                   // still rejected: an open twin holds the hash; otherwise the status moved meanwhile
+        const again = (await d.store.proposal(id)) ?? p;
+        return again.status === "rejected" ? openTwin(again) : conflict(again, "reconsider needs rejected");
+      }
+      return ok(proposalBody(reconsidered, null));
+    }
     const r = await applyProposal(id, { store: d.store, graph: d.graph, writeEnabled: d.writeEnabled, today: d.today, log });
     if (r.outcome === "conflict" || r.outcome === "not_due") return r.proposal ? conflict(r.proposal, "apply needs accepted and due") : notFound("Proposal not found");
     if (r.outcome === "writes_disabled") return writesDisabled();
@@ -138,6 +159,8 @@ async function proposalAction(req: HttpRequest, ctx: InvocationContext, action: 
 
 export const entraProposalAccept = (req: HttpRequest, ctx: InvocationContext) => proposalAction(req, ctx, "accept");
 export const entraProposalReject = (req: HttpRequest, ctx: InvocationContext) => proposalAction(req, ctx, "reject");
+export const entraProposalWithdraw = (req: HttpRequest, ctx: InvocationContext) => proposalAction(req, ctx, "withdraw");
+export const entraProposalReconsider = (req: HttpRequest, ctx: InvocationContext) => proposalAction(req, ctx, "reconsider");
 export const entraProposalApply = (req: HttpRequest, ctx: InvocationContext) => proposalAction(req, ctx, "apply");
 
 export async function entraProposalsDecide(req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> {
@@ -385,6 +408,8 @@ export async function entraLinkDelete(req: HttpRequest, ctx: InvocationContext):
 
 app.http("entraProposalAccept", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/{id}/accept", handler: entraProposalAccept });
 app.http("entraProposalReject", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/{id}/reject", handler: entraProposalReject });
+app.http("entraProposalWithdraw", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/{id}/withdraw", handler: entraProposalWithdraw });
+app.http("entraProposalReconsider", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/{id}/reconsider", handler: entraProposalReconsider });
 app.http("entraProposalApply", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/{id}/apply", handler: entraProposalApply });
 app.http("entraProposalsDecide", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/proposals/decide", handler: entraProposalsDecide });
 app.http("entraGroupMembersAdd", { methods: ["POST"], authLevel: "anonymous", route: "hub/entra/groups/{gid}/members", handler: entraGroupMembersAdd });
