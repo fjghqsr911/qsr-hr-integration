@@ -23,6 +23,8 @@
     leave_start      first day of a period in stage.leave_periods (23-leave-periods.sql), NOT job history.
     leave_return     the day after a period ends, unless a termination falls inside the period or on that day
                      (the leave ended in a termination). Store and job are those in effect on the date.
+                     Back to back periods (one ends the day before the next starts, as when the leave type changes)
+                     are one leave: a single start on the first day and a single return after the last day.
                      UKG writes job history only for hires, terminations and rehires; a leave start or return is in
                      status history alone, so the L / A values on job-history rows are ignored for leave. Leave events
                      are keyed on employee | company | leave | first day | rule, so the same leave keeps its key
@@ -199,9 +201,17 @@ BEGIN
                                                  CONVERT(char(10), p.leave_start, 23), '|', v.rule_applied)) AS binary(32))
         FROM stage.leave_periods p
         CROSS APPLY (VALUES
-            ('leave_start',  'Leave of absence',  p.leave_start,                  p.start_seen_utc, 1),
+            ('leave_start',  'Leave of absence',  p.leave_start,                  p.start_seen_utc,
+                /* not when the previous period ended the day before (a change of leave type mid leave) */
+                CASE WHEN EXISTS (SELECT 1 FROM stage.leave_periods q
+                                  WHERE q.employee_id = p.employee_id AND q.company_id = p.company_id
+                                    AND q.leave_end = DATEADD(day, -1, p.leave_start)) THEN 0 ELSE 1 END),
             ('leave_return', 'Return from leave', DATEADD(day, 1, p.leave_end),   p.end_seen_utc,
                 CASE WHEN p.leave_end IS NULL THEN 0
+                     /* not when the next period starts the day after (the leave continues under another type) */
+                     WHEN EXISTS (SELECT 1 FROM stage.leave_periods q
+                                  WHERE q.employee_id = p.employee_id AND q.company_id = p.company_id
+                                    AND q.leave_start = DATEADD(day, 1, p.leave_end)) THEN 0
                      WHEN EXISTS (SELECT 1 FROM #rows t
                                   WHERE t.employee_id = p.employee_id AND t.company_id = p.company_id
                                     AND t.row_kind = 'termination'

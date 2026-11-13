@@ -7,7 +7,9 @@
 -- Where periods come from:
 --   status      the syncs. Every employment row hrint-api reads carries the current status and its start date.
 --               stage.usp_capture_status runs before stage.employment_current is overwritten: status L opens a period
---               starting on the status start date; status A or T closes the open period the day before.
+--               starting on the status start date; status A or T closes the open period the day before. A later
+--               L start while on leave (a change of leave type) closes the old period the day before and opens a
+--               new one; back to back periods count as one leave for events.
 --   loa_report  the UKG People Analytics report QSR Detail LOA History, converted with
 --               provisioning/tools/loa-report-to-sql.py (keeps employee number, start and stop only) and loaded with
 --               stage.usp_import_leave_periods. Used for the backfill and, later, for reconciliation.
@@ -51,10 +53,11 @@ BEGIN
       AND employee_status IN ('A', 'L', 'T');
     DELETE FROM #n WHERE rn > 1;
 
-    /* 1. A status that restarted with nothing to explain it: the employee was A (or L) since one date and is now A (or
-          L) since a later date, and no period starts or ends there. Something happened in between that was entered
-          after the fact (typically a leave and its return entered together). Compared with the row about to be
-          replaced, so it fires once. Skipped when rpt.data_quality_issues has no identity key. */
+    /* 1. An active status that restarted with nothing to explain it: the employee was A since one date and is now A
+          since a later date, and no period starts or ends there. Something happened in between that was entered after
+          the fact (typically a leave and its return entered together). Compared with the row about to be replaced, so
+          it fires once. An L restart is a change of leave type and is handled in step 2. Skipped when
+          rpt.data_quality_issues has no identity key. */
     IF COLUMNPROPERTY(OBJECT_ID('rpt.data_quality_issues'), 'issue_id', 'IsIdentity') = 1
         INSERT INTO rpt.data_quality_issues (issue_type, employee_id, company_id, store, detail, detected_utc)
         SELECT 'status_change_not_seen', n.employee_id, n.company_id, n.store,
@@ -64,7 +67,7 @@ BEGIN
                SYSUTCDATETIME()
         FROM #n n
         JOIN stage.employment_current c ON c.employee_id = n.employee_id AND c.company_id = n.company_id
-        WHERE n.status IN ('A', 'L') AND c.employee_status = n.status
+        WHERE n.status = 'A' AND c.employee_status = n.status
           AND c.status_start_date IS NOT NULL AND n.start_date > c.status_start_date
           AND NOT EXISTS (SELECT 1 FROM stage.leave_periods p
                           WHERE p.employee_id = n.employee_id AND p.company_id = n.company_id
@@ -75,6 +78,13 @@ BEGIN
     FROM stage.leave_periods p
     JOIN #n n ON n.employee_id = p.employee_id AND n.company_id = p.company_id AND n.start_date = p.leave_start
     WHERE n.status = 'L' AND p.leave_end IS NOT NULL;
+
+    /* A later L start while a period is open is a change of leave type: UKG ended the old period the day before.
+       Closing it makes the two periods back to back, which the event rebuild treats as one leave. */
+    UPDATE p SET leave_end = DATEADD(day, -1, n.start_date), end_seen_utc = SYSUTCDATETIME(), updated_utc = SYSUTCDATETIME()
+    FROM stage.leave_periods p
+    JOIN #n n ON n.employee_id = p.employee_id AND n.company_id = p.company_id
+    WHERE n.status = 'L' AND p.leave_end IS NULL AND p.leave_start < n.start_date;
 
     INSERT INTO stage.leave_periods (employee_id, company_id, leave_start, leave_end, source, start_seen_utc)
     SELECT n.employee_id, n.company_id, n.start_date, NULL, 'status', SYSUTCDATETIME()
