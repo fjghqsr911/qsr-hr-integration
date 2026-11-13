@@ -193,7 +193,7 @@ BEGIN
         COMMIT;
 
         /* Employees whose periods changed: everything in the report diff, plus removed report periods */
-        SET @affected = (SELECT '[' + STRING_AGG(CONCAT('"', employee_id, '"'), ',') + ']'
+        SET @affected = (SELECT '[' + STRING_AGG(CAST(CONCAT('"', employee_id, '"') AS nvarchar(max)), ',') + ']'
                          FROM (SELECT DISTINCT employee_id FROM #diff
                                WHERE kind <> 'not_in_report' OR hub_source = 'loa_report') x);
         IF @rebuild = 1 AND @affected IS NOT NULL AND OBJECT_ID('rpt.usp_rebuild_events', 'P') IS NOT NULL
