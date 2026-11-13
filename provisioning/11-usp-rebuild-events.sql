@@ -20,12 +20,21 @@
                      code 101); System conversion (Admin codes, e.g. CONV / ACQ); otherwise New hire. So each employee
                      has at most one New hire.
     rehire           status T -> A or L (Cross-company transfer in or Additional company by the same tests).
-    leave_start      A -> L.                      leave_return      L -> A.
+    leave_start      first day of a period in stage.leave_periods (23-leave-periods.sql), NOT job history.
+    leave_return     the day after a period ends, unless a termination falls inside the period or on that day
+                     (the leave ended in a termination). Store and job are those in effect on the date.
+                     UKG writes job history only for hires, terminations and rehires; a leave start or return is in
+                     status history alone, so the L / A values on job-history rows are ignored for leave. Leave events
+                     are keyed on employee | company | leave | first day | rule, so the same leave keeps its key
+                     whether the syncs or the LOA report supplied it. entered_utc = when a sync first saw the change,
+                     or noon UTC on the effective date for periods only the LOA report had (the true entry time is
+                     not in the report).
     store_change     org_level2 changed.          district_change   org_level1 changed, same store.
     job_change       job_code changed.            ftpt_change       full_or_part_time changed.
     pay_change       UKG rate-change flag or a Pay reason code (no amounts are stored).
     reason_only      none of the above, but the reason code creates an event (e.g. 700 Status change). Transfer codes
-                     never do: a transfer with no store change (e.g. WLC work-location changes) is not a move.
+                     never do: a transfer with no store change (e.g. WLC work-location changes) is not a move. Leave
+                     codes (e.g. RTW) never do either: leave events come from stage.leave_periods.
   A hire, rehire or termination row produces only that event (its store, job and pay are the starting point).
   Blank values on either row never count as a change.
 
@@ -90,9 +99,9 @@ BEGIN
     SELECT h.*, rc.category AS rc_category, rc.event_type AS rc_event_type, k.row_kind, f.*,
            x.company_id AS xfer_from_company, x.store AS xfer_from_store, x.job_code AS xfer_from_job,
            ISNULL(st.start_order, 1) AS start_order, a.active_elsewhere,
-           CASE WHEN k.row_kind = 'continuing' AND rc.creates_event = 1 AND rc.category NOT IN ('Hire', 'Termination', 'Transfer')
-                     AND f.leave_start + f.leave_return + f.store_changed + f.district_changed + f.job_changed
-                         + f.ftpt_changed + f.pay_changed = 0
+           CASE WHEN k.row_kind = 'continuing' AND rc.creates_event = 1
+                     AND rc.category NOT IN ('Hire', 'Termination', 'Transfer', 'Leave')
+                     AND f.store_changed + f.district_changed + f.job_changed + f.ftpt_changed + f.pay_changed = 0
                 THEN 1 ELSE 0 END AS reason_only
     INTO #rows
     FROM #jh h
@@ -103,8 +112,6 @@ BEGIN
                              WHEN h.prev_status = 'T'                                THEN 'rehire'
                              ELSE 'continuing' END AS row_kind) k
     CROSS APPLY (SELECT
-        CASE WHEN k.row_kind = 'continuing' AND h.prev_status = 'A' AND h.status = 'L' THEN 1 ELSE 0 END AS leave_start,
-        CASE WHEN k.row_kind = 'continuing' AND h.prev_status = 'L' AND h.status = 'A' THEN 1 ELSE 0 END AS leave_return,
         CASE WHEN k.row_kind = 'continuing' AND h.prev_store <> h.store THEN 1 ELSE 0 END AS store_changed,
         CASE WHEN k.row_kind = 'continuing' AND h.prev_district <> h.district
                   AND NOT (h.prev_store <> h.store) THEN 1 ELSE 0 END AS district_changed,
@@ -169,8 +176,6 @@ BEGIN
                  WHEN r.active_elsewhere = 1 THEN 'Additional company'
                  ELSE 'Rehire' END,
             CASE WHEN r.row_kind = 'rehire' THEN 1 ELSE 0 END),
-        ('leave_start',     'Leave of absence',  r.leave_start),
-        ('leave_return',    'Return from leave', r.leave_return),
         ('store_change',    CASE WHEN r.rc_event_type = 'Temporary transfer' THEN 'Temporary transfer' ELSE 'Store transfer' END, r.store_changed),
         ('district_change', 'District realignment', r.district_changed),
         ('job_change',      CASE WHEN r.rc_event_type IN ('Promotion', 'Demotion') THEN r.rc_event_type ELSE 'Job change' END, r.job_changed),
@@ -179,6 +184,39 @@ BEGIN
         ('reason_only',     r.rc_event_type, r.reason_only)
     ) v (rule_applied, event_type, fires)
     WHERE v.fires = 1;
+
+    /* 3b. Leave of absence and return from leave, from stage.leave_periods (UKG status history) */
+    IF OBJECT_ID('stage.leave_periods', 'U') IS NOT NULL
+        INSERT INTO #ev (employee_id, company_id, rule_applied, event_type, effective_date, entered_utc,
+                         from_company, to_company, from_store, to_store, from_job, to_job,
+                         termination_category, counts_in_turnover, reason_code, source_system_ids, event_key)
+        SELECT p.employee_id, p.company_id, v.rule_applied, v.event_type, v.effective_date,
+               COALESCE(v.seen_utc, DATEADD(hour, 12, CAST(v.effective_date AS datetime2))),
+               p.company_id, p.company_id, j.store, j.store, j.job_code, j.job_code,
+               NULL, NULL, NULL,
+               CONCAT('leave|', CONVERT(char(10), p.leave_start, 23)),
+               CAST(HASHBYTES('SHA2_256', CONCAT(p.employee_id, '|', p.company_id, '|leave|',
+                                                 CONVERT(char(10), p.leave_start, 23), '|', v.rule_applied)) AS binary(32))
+        FROM stage.leave_periods p
+        CROSS APPLY (VALUES
+            ('leave_start',  'Leave of absence',  p.leave_start,                  p.start_seen_utc, 1),
+            ('leave_return', 'Return from leave', DATEADD(day, 1, p.leave_end),   p.end_seen_utc,
+                CASE WHEN p.leave_end IS NULL THEN 0
+                     WHEN EXISTS (SELECT 1 FROM #rows t
+                                  WHERE t.employee_id = p.employee_id AND t.company_id = p.company_id
+                                    AND t.row_kind = 'termination'
+                                    AND t.job_effective_date BETWEEN p.leave_start AND DATEADD(day, 1, p.leave_end)) THEN 0
+                     ELSE 1 END)
+        ) v (rule_applied, event_type, effective_date, seen_utc, fires)
+        /* store and job in effect that day: the latest job-history row on or before it, else the first row after */
+        OUTER APPLY (SELECT TOP 1 h.store, h.job_code
+                     FROM #jh h
+                     WHERE h.employee_id = p.employee_id AND h.company_id = p.company_id AND h.status <> 'T'
+                     ORDER BY CASE WHEN h.job_effective_date <= v.effective_date THEN 0 ELSE 1 END,
+                              CASE WHEN h.job_effective_date <= v.effective_date THEN h.job_effective_date END DESC,
+                              h.job_effective_date, h.date_time_created DESC, h.system_id DESC) j
+        WHERE v.fires = 1
+          AND (@all = 1 OR p.employee_id IN (SELECT employee_id FROM #ids));
 
     /* 4. Apply: insert new, update changed, remove events these employees no longer have. Then (5) queue deliveries,
           in the same transaction, so an event change and its deliveries are written together or not at all. */

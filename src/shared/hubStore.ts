@@ -2,6 +2,12 @@ import { sql } from "./sql";
 import { HubStore, EmploymentRow, JobHistoryRow, TermCode, SnapshotRow } from "./hubSync";
 import { ContactRow } from "./contacts";
 
+/** Records leave starts and returns (stage.leave_periods) from the employment rows about to be written, before
+ *  stage.employment_current is overwritten (it compares with the stored row). Skipped until 23-leave-periods.sql has run.
+ *  `param` is the batch parameter holding the employment rows as JSON. */
+const CAPTURE_STATUS = (param: string) =>
+  `IF OBJECT_ID('stage.usp_capture_status', 'P') IS NOT NULL EXEC stage.usp_capture_status @emp = ${param};`;
+
 /** HubStore backed by sqldb-hrint (stage / ref / rpt schemas). */
 export class SqlHubStore implements HubStore {
   constructor(private pool: sql.ConnectionPool) {}
@@ -62,6 +68,7 @@ export class SqlHubStore implements HubStore {
         .input("emp", sql.NVarChar(sql.MAX), JSON.stringify(employment))
         .input("jh", sql.NVarChar(sql.MAX), JSON.stringify(jobHistory))
         .query(`
+          ${CAPTURE_STATUS("@emp")}
           DELETE FROM stage.employment_current WHERE employee_id IN (SELECT value FROM OPENJSON(@ids));
           INSERT INTO stage.employment_current
             (employee_id, company_id, employee_number, is_home_company, employee_status, status_start_date, original_hire_date,
@@ -171,6 +178,7 @@ export class SqlHubStore implements HubStore {
 
   async upsertEmployment(rows: EmploymentRow[]): Promise<void> {
     await this.pool.request().input("r", sql.NVarChar(sql.MAX), JSON.stringify(rows)).query(`
+      ${CAPTURE_STATUS("@r")}
       MERGE stage.employment_current AS t
       USING (SELECT * FROM OPENJSON(@r) WITH (
             employee_id varchar(20), company_id varchar(10), employee_number varchar(20), is_home_company bit,

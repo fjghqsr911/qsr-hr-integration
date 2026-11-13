@@ -68,6 +68,21 @@ employment details (in-scope check) + job history → one SQL transaction replac
 (if `rpt.usp_rebuild_events` exists). Runs are logged in `stage.sync_runs` (`rpt.v_sync_health`). A partial run (some employees
 failed) does not advance the window, so the next run retries them.
 
+### Leave of absence (status history, not job history)
+UKG writes job history only for hires, terminations and rehires. A leave start or return is recorded in status history
+alone, so leave events are built from `stage.leave_periods` (script 23), never from the L / A values on job-history rows.
+- **Live:** every employment row the intraday and nightly syncs write carries the current status and its start date.
+  Before `stage.employment_current` is overwritten, `stage.usp_capture_status` opens a period when the status is L (first
+  day = status start date) and closes the open period the day before an A or T status started. A status that restarts
+  with no period to explain it (a leave and its return both entered after the fact) raises the data quality issue
+  `status_change_not_seen`.
+- **Backfill and reconciliation:** the UKG People Analytics report *QSR Detail LOA History with prompts*, exported to .xlsx,
+  converted with `provisioning/tools/loa-report-to-sql.py` (reads employee number, start and stop only; never names or the
+  LOA reason) and run with `stage.usp_import_leave_periods`. `--dry-run` compares the report with the hub and writes nothing:
+  the reconciliation. How the report reaches the hub on a schedule is not decided yet; for now it is exported and run by hand.
+- **Events:** Leave of absence on the first day; Return from leave the day after the period ends, unless a termination falls
+  inside the leave or on that day. Leave events are not mapped to any destination in `ref.destination_events` yet.
+
 ### Nightly job (`hubNightlyTimer`, 06:15 UTC = 2:15 AM Toronto summer / 1:15 AM winter)
 1. Employment details for status A and L -> today's `stage.employment_snapshot` (Toronto date) + refresh current rows (with names)
 2. Person details -> names + contact details + birth month/day (year discarded immediately) for active / on-leave staff only (everything else discarded)
@@ -167,6 +182,14 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `18-ref-stores.sql` | `ref.stores`: store names, brands, districts, cities (filled from the store CSV) for the monitor directory and the Entra department / officeLocation |
 | `19-directory-view.sql` | `rpt.v_directory`: one row per employee with store name and city, job title and **work email** (the only contact column; personal details stay out of reach of the monitor) |
 | `20-entra-tables.sql` | Schema `entra`: `users`, `groups`, `group_members` (snapshot), `links`, `link_issues`, `rules`, `proposals`, `rejections`, `sync_runs`; grants the Function App user the schema plus SELECT on `ref.stores`, `rpt.v_directory` and `rpt.workforce_events`. Run after 18 and 19 and before the first Entra sync; the Diagnostics tab's entra row reports these objects and grants (skipped until they exist) |
+
+| `23-leave-periods.sql` | `stage.leave_periods` (leave of absence periods from UKG status history, dates only), `stage.usp_capture_status` (called by the syncs), `stage.usp_import_leave_periods` (LOA report load, `@dry_run = 1` to reconcile) and the purge updated to remove periods. Run before the updated 11; see [Leave of absence](#leave-of-absence-status-history-not-job-history) |
+| `tools/loa-report-to-sql.py` | Converts the LOA History report export (.xlsx) into an `EXEC stage.usp_import_leave_periods` script holding employee numbers and dates only. `python -I loa-report-to-sql.py report.xlsx out.sql [--dry-run] [--no-rebuild]` |
+
+Leave rollout, in one sitting away from :05 past 10/14/18/22 UTC: run 23, then the updated 11, then a dry-run of the
+converted report (review the differences), then the load, then `EXEC rpt.usp_rebuild_events @employee_ids = NULL` once so
+the old job-history leave events are removed for everyone. Run the report with LOA Start Date from Jan 2020 so leaves
+running at the Aug 2023 UKG go-live are included.
 
 13 and 14 have no comments: the portal Query editor rejected them with "Missing end comment mark". The design they implement
 is in the plan doc (Delivery design); 14 switches one store (`@store`, default `T00037`) to shadow for `@destination` inside a
