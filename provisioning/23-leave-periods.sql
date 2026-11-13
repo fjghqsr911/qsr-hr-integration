@@ -235,7 +235,19 @@ BEGIN
 END
 GO
 
-SELECT (SELECT COUNT(*) FROM stage.leave_periods)                               AS leave_periods,
+/* The syncs call stage.usp_capture_status as the Function App user. Without this grant every sync would fail. */
+DECLARE @app sysname = N'mi-func-hrint';
+DECLARE @sql nvarchar(max);
+IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = @app)
+BEGIN
+    SET @sql = N'GRANT EXECUTE ON OBJECT::stage.usp_capture_status TO ' + QUOTENAME(@app) + N';';
+    EXEC sp_executesql @sql;
+END;
+
+/* Verification: capture_execute_grants must be 1 (0 means the syncs cannot record leave and will fail) */
+SELECT (SELECT COUNT(*) FROM sys.database_permissions p JOIN sys.database_principals dp ON dp.principal_id = p.grantee_principal_id
+        WHERE dp.name = @app AND p.major_id = OBJECT_ID('stage.usp_capture_status') AND p.permission_name = 'EXECUTE') AS capture_execute_grants,
+       (SELECT COUNT(*) FROM stage.leave_periods)                               AS leave_periods,
        (SELECT COUNT(*) FROM stage.leave_periods WHERE leave_end IS NULL)       AS on_leave_now,
        OBJECT_ID('stage.usp_capture_status', 'P')                               AS capture_proc,
        OBJECT_ID('stage.usp_import_leave_periods', 'P')                         AS import_proc,
