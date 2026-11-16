@@ -37,7 +37,10 @@ export class ClearviewApiReads implements ClearviewReads {
 }
 
 const isActive = (status: unknown) => /^a/i.test(String(status ?? ""));
-const sameName = (a: unknown, b: unknown) => String(a ?? "").trim().toUpperCase() === String(b ?? "").trim().toUpperCase();
+/** Letters only, upper-cased, accents stripped: O'Brien / OBRIEN / O Brien / Ó Brien compare equal. */
+export const foldName = (s: unknown) => String(s ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z]/g, "");
+/** Same last name ignoring punctuation, spaces, case and accents; never true for an empty name. */
+export const sameName = (a: unknown, b: unknown) => { const x = foldName(a); return x !== "" && x === foldName(b); };
 const stdOf = (detail: any) => detail?.standardInformation ?? detail ?? {};
 const idOf = (detail: any): number | null => { const id = Number(stdOf(detail)?.employeeId); return Number.isInteger(id) && id > 0 ? id : null; };
 
@@ -94,8 +97,10 @@ export class ClearviewConnector implements Connector {
     if (emp.employeeNumber) {
       const byNumber = await this.reads.employeeByNumber(company, emp.employeeNumber);
       const id2 = idOf(byNumber);
-      if (id2 && sameName(stdOf(byNumber).lastName, emp.lastName)) return { id: id2, xref: { externalId: String(id2), source: "matched" } };
-      if (id2) this.log(`employee ${emp.employeeId}: Clearview employeeNumber match has a different last name; not linked`);
+      if (id2) {                                                           // the employee number is the key; the last name is a sanity check only
+        if (!sameName(stdOf(byNumber).lastName, emp.lastName)) this.log(`employee ${emp.employeeId}: linked by employeeNumber; last name differs from Clearview (name change?)`);
+        return { id: id2, xref: { externalId: String(id2), source: "matched" } };
+      }
     }
     throw new DeliveryError("waiting", "employee not in Clearview yet (import not added by Payroll, or never sent)");
   }
@@ -235,7 +240,7 @@ export class ClearviewConnector implements Connector {
       if (p.employeeNumber) {
         const byNumber = await this.reads.employeeByNumber(company, p.employeeNumber);
         const id2 = idOf(byNumber);
-        if (id2 && sameName(stdOf(byNumber).lastName, p.lastName)) return { externalId: String(id2), source: "created" };
+        if (id2) return { externalId: String(id2), source: "created" };     // employee number is the key (last name may have changed)
       }
       return null;
     } catch (e) { throw classify(e); }

@@ -7,7 +7,7 @@ const SIN = "123456789";
 
 module.exports = async () => {
   const { ClearviewClient, ClearviewError, safeMessage, _resetFirstCallLog } = require(path.join(DIST, "shared", "clearview", "client.js"));
-  const { ClearviewConnector, ClearviewApiReads, classify, currentRate, currentPay, normalizePayType } = require(path.join(DIST, "shared", "clearview", "connector.js"));
+  const { ClearviewConnector, ClearviewApiReads, classify, currentRate, currentPay, normalizePayType, sameName } = require(path.join(DIST, "shared", "clearview", "connector.js"));
   const { codeKey } = require(path.join(DIST, "shared", "delivery.js"));
   const { discover, tdlDigits, hubDigits } = require(path.join(DIST, "shared", "clearview", "discover.js"));
   const { DeliveryError } = require(path.join(DIST, "shared", "delivery.js"));
@@ -163,7 +163,7 @@ module.exports = async () => {
     eq(seq(f), ["GET /employee/55501", "PUT /employeeStatus/55501/terminate"]); eq(r.warning, "termination date changed from 2026-10-10");
   });
 
-  await test("connector: employee lookup without xref - externalId, then employeeNumber + last name (matched xref); mismatch -> waiting", async () => {
+  await test("connector: employee lookup without xref - externalId, then employeeNumber (matched xref; a different last name links with a note); unknown -> waiting", async () => {
     const payload = { terminationDate: "2026-10-18", terminationReasonId: 13078 };
     let f = fakeFetch({ "GET /api/v2/employee/externalId/EWLTH200NRY0": [200, emp("Active")], "GET /api/v2/employee/55501": [200, emp("Active")], "POST /api/v2/employeeStatus/55501/terminate": [200, {}] });
     let r = await connector(f).execute(planOf("terminate", payload), ctxFor({ xref: null }));
@@ -171,13 +171,23 @@ module.exports = async () => {
     f = fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, emp("Active")], "GET /api/v2/employee/55501": [200, emp("Active")], "POST /api/v2/employeeStatus/55501/terminate": [200, {}] });
     r = await connector(f).execute(planOf("terminate", payload), ctxFor({ xref: null }));
     eq(seq(f).slice(0, 2), ["GET /employee/externalId/EWLTH200NRY0", "GET /employee/employeeNumber/100234"]); eq(r.xref.source, "matched");
+    // same employee number, different last name (name change since hire): the number is the key, so it links, with one note and no name in it
     const logs = [];
-    f = fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, { standardInformation: { employeeId: 777, status: "Active", lastName: "Other" } }] });
-    let err = null; try { await connector(f, m => logs.push(m)).execute(planOf("terminate", payload), ctxFor({ xref: null })); } catch (e) { err = e; }
-    assert(err instanceof DeliveryError && err.kind === "waiting", String(err)); eq(err.message, "employee not in Clearview yet (import not added by Payroll, or never sent)");
-    eq(seq(f).length, 2, "no write when the employee is unknown"); eq(logs.length, 1); assert(!logs[0].includes("Other"), "names never logged");
+    const other = { standardInformation: { employeeId: 777, status: "Active", lastName: "Other" } };
+    f = fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, other], "GET /api/v2/employee/777": [200, other], "POST /api/v2/employeeStatus/777/terminate": [200, {}] });
+    r = await connector(f, m => logs.push(m)).execute(planOf("terminate", payload), ctxFor({ xref: null }));
+    eq(r.xref, { externalId: "777", source: "matched" }); eq(seq(f)[3], "POST /employeeStatus/777/terminate");
+    eq(logs.length, 1); assert(logs[0].includes("last name differs"), logs[0]); assert(!logs[0].includes("Other"), "names never logged");
+    // punctuation / accents in the last name are not a difference
+    f = fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, { standardInformation: { employeeId: 55501, status: "Active", lastName: "Ex-Ample" } }], "GET /api/v2/employee/55501": [200, emp("Active")], "POST /api/v2/employeeStatus/55501/terminate": [200, {}] });
+    logs.length = 0; r = await connector(f, m => logs.push(m)).execute(planOf("terminate", payload), ctxFor({ xref: null }));
+    eq(r.xref.source, "matched"); eq(logs.length, 0, "folded names equal: no note");
+    // unknown employee (neither lookup finds anyone): waiting, no write
     f = fakeFetch({});
-    err = null; try { await connector(f).execute(planOf("pay", {}), ctxFor({ xref: null })); } catch (e) { err = e; }
+    let err = null; try { await connector(f).execute(planOf("terminate", payload), ctxFor({ xref: null })); } catch (e) { err = e; }
+    assert(err instanceof DeliveryError && err.kind === "waiting", String(err)); eq(err.message, "employee not in Clearview yet (import not added by Payroll, or never sent)");
+    eq(seq(f).length, 2, "no write when the employee is unknown");
+    err = null; try { await connector(fakeFetch({})).execute(planOf("pay", {}), ctxFor({ xref: null })); } catch (e) { err = e; }
     eq(err.kind, "waiting");
   });
 
@@ -310,7 +320,7 @@ module.exports = async () => {
     const pending = { deliveryId: 1, employeeId: "EWLTH200NRY0", companyId: "SWN6T", employeeNumber: "100234", lastName: "Example", finishedUtc: new Date() };
     eq(await connector(fakeFetch({ "GET /api/v2/employee/externalId/EWLTH200NRY0": [200, emp("Active")] })).resolveCreated(pending), { externalId: "55501", source: "created" });
     eq(await connector(fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, emp("Active")] })).resolveCreated(pending), { externalId: "55501", source: "created" });
-    eq(await connector(fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, { standardInformation: { employeeId: 1, lastName: "Nope" } }] })).resolveCreated(pending), null);
+    eq(await connector(fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, { standardInformation: { employeeId: 1, lastName: "Nope" } }] })).resolveCreated(pending), { externalId: "1", source: "created" }, "employee number is the key even when the last name differs");
     eq(await connector(fakeFetch({})).resolveCreated(pending), null);
     err = null; try { await connector(fakeFetch({ "*": [401, ""] })).resolveCreated(pending); } catch (e) { err = e; }
     eq(err.kind, "abort");
@@ -389,13 +399,17 @@ module.exports = async () => {
     assert(f.calls.some(c => c.path === "/api/v2/organization/filecontrol" && c.query.requiredAttributesOnly === "true"));
   });
 
-  await test("discover employees: xref 'extract' by employeeNumber + last name; mismatches and unmatched counted; no names in the report", async () => {
+  await test("discover employees: xref 'extract' by employeeNumber; last name folded (punctuation, accents); a unique number links despite a name change; ambiguous numbers counted; no names in the report", async () => {
     const f = fakeFetch({ "GET /api/v2/organization/employees": [200, { organizationId: 18, employees: [
-      { employeeId: 501, employeeNumber: "000100234", lastName: "Example" }, { employeeId: 502, employeeNumber: "100235", lastName: "Wrong" }, { employeeId: 503, employeeNumber: "999", lastName: "Nobody" }] }] });
-    const s = discoveryStore({ employees: [{ employeeId: "E1", companyId: "SWN6T", employeeNumber: "100234", lastName: "EXAMPLE" }, { employeeId: "E2", companyId: "SWN6T", employeeNumber: "100235", lastName: "Right" }, { employeeId: "E3", companyId: "SWN6T", employeeNumber: null, lastName: "X" }] });
+      { employeeId: 501, employeeNumber: "000100234", lastName: "Example" }, { employeeId: 502, employeeNumber: "100235", lastName: "Wrong" }, { employeeId: 503, employeeNumber: "999", lastName: "Nobody" },
+      { employeeId: 504, employeeNumber: "100236", lastName: "O'Brien-Núñez" },
+      { employeeId: 505, employeeNumber: "100237", lastName: "Dupe" }, { employeeId: 506, employeeNumber: "100237", lastName: "Other" }] }] });
+    const s = discoveryStore({ employees: [{ employeeId: "E1", companyId: "SWN6T", employeeNumber: "100234", lastName: "EXAMPLE" }, { employeeId: "E2", companyId: "SWN6T", employeeNumber: "100235", lastName: "Right" }, { employeeId: "E3", companyId: "SWN6T", employeeNumber: null, lastName: "X" },
+      { employeeId: "E4", companyId: "SWN6T", employeeNumber: "100236", lastName: "OBRIEN NUNEZ" }, { employeeId: "E5", companyId: "SWN6T", employeeNumber: "100237", lastName: "Neither" }] });
     const report = await discover(client(f), s, { companies: ["SWN6T"], what: "employees" });
-    eq(s.xrefs, [{ employeeId: "E1", externalId: "501", source: "extract" }]);
-    eq(report.employees, { clearview: 3, hubWithoutXref: 3, matched: 1, lastNameMismatch: 1, unmatchedHub: 2 });
+    eq(s.xrefs, [{ employeeId: "E1", externalId: "501", source: "extract" }, { employeeId: "E2", externalId: "502", source: "extract" }, { employeeId: "E4", externalId: "504", source: "extract" }]);
+    eq(report.employees, { clearview: 6, hubWithoutXref: 5, matched: 3, numberOnly: 1, lastNameMismatch: 2, unmatchedHub: 2 }, "E2 by unique number despite the name; E4 by folded name; E5 ambiguous (two Clearview records) not linked");
+    eq(sameName("O'Brien", "OBRIEN"), true); eq(sameName("Núñez", "nunez"), true); eq(sameName("De La Cruz", "DELACRUZ"), true); eq(sameName("", ""), false); eq(sameName("Smith", "Smyth"), false);
     eq(f.calls[0].query.includeInactiveEmployee, "true");
     const text = JSON.stringify(report);
     assert(!text.includes("Example") && !text.includes("Wrong") && !text.includes("Right"), "report carries no names");

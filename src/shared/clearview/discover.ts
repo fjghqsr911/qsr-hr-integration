@@ -1,6 +1,6 @@
 import { CodeMaps, CodeType } from "../delivery";
 import { ClearviewClient } from "./client";
-import { ClearviewApiReads, ClearviewReads } from "./connector";
+import { ClearviewApiReads, ClearviewReads, sameName } from "./connector";
 
 /*
   Mapping discovery, per Clearview organization key (= per UKG company):
@@ -9,7 +9,8 @@ import { ClearviewApiReads, ClearviewReads } from "./connector";
   Stores are paired automatically: hub org_level2 digits (T22446 -> 22446) = tdlNumber without its leading 1 (122446),
   never derived from the UKG code (UKG could not hold six digits). Paired stores and the company row are written to
   ref.destination_codes; jobs and termination reasons are listed for a person to pair in provisioning/17.
-  what = "employees": GET /organization/employees matched to hub employees by employeeNumber + last name -> xref 'extract'.
+  what = "employees": GET /organization/employees matched to hub employees by employeeNumber (last name as a folded sanity check;
+  a unique number links even when the last name changed) -> xref 'extract'.
   The report holds ids, codes, names of stores / jobs / reasons and counts: never employee names.
 */
 
@@ -34,7 +35,7 @@ export interface DiscoverReport {
   organizations: OrganizationReport[];
   stores: { paired: number; written: number; unpairedHub: string[]; unpairedClearview: { company: string; storeId: number; storeNumber: number; tdlNumber: string | null; name: string }[] };
   staleMappings: { codeType: string; company: string; ukgCode: string; destinationCode: string; destinationId: string | null }[];
-  employees?: { clearview: number; hubWithoutXref: number; matched: number; lastNameMismatch: number; unmatchedHub: number };
+  employees?: { clearview: number; hubWithoutXref: number; matched: number; numberOnly: number; lastNameMismatch: number; unmatchedHub: number };
 }
 
 export const hubDigits = (code: string) => code.replace(/\D/g, "").replace(/^0+/, "");
@@ -118,29 +119,39 @@ export async function discover(client: ClearviewClient, store: DiscoveryStore, o
   const hub = await store.employeesWithoutXref();
   const byNumber = new Map<string, typeof hub>();
   for (const h of hub) { if (!h.employeeNumber) continue; const k = normNumber(h.employeeNumber); byNumber.set(k, [...(byNumber.get(k) ?? []), h]); }
-  const rows: { employeeId: string; externalId: string; source: "extract" }[] = [];
-  const matchedIds = new Set<string>();
-  let clearviewCount = 0, mismatch = 0;
+  // All organizations first, so a number's uniqueness is judged across both.
+  const clearview: any[] = [];
   for (const org of report.organizations) {
     if (org.error) continue;
     try {
       const o = await reads.organizationEmployees(org.company, true);
       org.organizationId = Number(o?.organizationId) || null; org.name = o?.name ?? null;
-      for (const e of (o?.employees ?? []) as any[]) {
-        clearviewCount++;
-        const candidates = byNumber.get(normNumber(e.employeeNumber)) ?? [];
-        for (const h of candidates) {
-          if (matchedIds.has(h.employeeId)) continue;
-          if (!sameLast(e.lastName, h.lastName)) { mismatch++; continue; }
-          matchedIds.add(h.employeeId);
-          rows.push({ employeeId: h.employeeId, externalId: String(e.employeeId), source: "extract" });
-        }
-      }
+      clearview.push(...((o?.employees ?? []) as any[]));
     } catch (e: any) { org.error = String(e?.message ?? "error").slice(0, 300); log(`discover employees ${org.company}: ${org.error}`); }
   }
+  const clearviewByNumber = new Map<string, number>();
+  for (const e of clearview) { const k = normNumber(e.employeeNumber); if (k) clearviewByNumber.set(k, (clearviewByNumber.get(k) ?? 0) + 1); }
+
+  // The employee number is the key. Same last name (punctuation, spaces, case and accents ignored) links outright; a different
+  // last name still links when the number is unique on both sides (name changed since hire); otherwise it is counted, not linked.
+  const rows: { employeeId: string; externalId: string; source: "extract" }[] = [];
+  const matchedIds = new Set<string>();
+  let numberOnly = 0, mismatch = 0;
+  for (const e of clearview) {
+    const k = normNumber(e.employeeNumber);
+    const candidates = byNumber.get(k) ?? [];
+    for (const h of candidates) {
+      if (matchedIds.has(h.employeeId)) continue;
+      const byName = sameName(e.lastName, h.lastName);
+      if (!byName) {
+        if (candidates.length !== 1 || clearviewByNumber.get(k) !== 1) { mismatch++; continue; }
+        numberOnly++;
+      }
+      matchedIds.add(h.employeeId);
+      rows.push({ employeeId: h.employeeId, externalId: String(e.employeeId), source: "extract" });
+    }
+  }
   await store.upsertXrefMany(rows);
-  report.employees = { clearview: clearviewCount, hubWithoutXref: hub.length, matched: rows.length, lastNameMismatch: mismatch, unmatchedHub: hub.length - rows.length };
+  report.employees = { clearview: clearview.length, hubWithoutXref: hub.length, matched: rows.length, numberOnly, lastNameMismatch: mismatch, unmatchedHub: hub.length - rows.length };
   return report;
 }
-
-const sameLast = (a: unknown, b: unknown) => String(a ?? "").trim().toUpperCase() === String(b ?? "").trim().toUpperCase() && String(a ?? "").trim() !== "";
