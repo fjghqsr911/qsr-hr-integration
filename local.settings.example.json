@@ -17,6 +17,20 @@
     "HUB_LOOKBACK_MONTHS": "24",
     "HUB_SYNC_ENABLED": "false",
 
+    "CLEARVIEW_BASE_URL": "https://api.clearviewconnect.com",
+    "CLEARVIEW_AUTH_MODE": "oauth",
+    "CLEARVIEW_TOKEN_URL": "https://login.microsoftonline.com/<clearview-tenant-id>/oauth2/v2.0/token",
+    "CLEARVIEW_SCOPE": "api://<clearview-api-app-id>/.default",
+    "CLEARVIEW_COMPANIES": "SWN6T,SWNGK",
+    "CLEARVIEW_CLIENT_ID_SWN6T": "<pfsl-oauth-client-id>",
+    "CLEARVIEW_CLIENT_SECRET_SWN6T": "<pfsl-oauth-client-secret>",
+    "CLEARVIEW_SECRET_EXPIRES_SWN6T": "<yyyy-mm-dd>",
+    "CLEARVIEW_CLIENT_ID_SWNGK": "<stis-oauth-client-id>",
+    "CLEARVIEW_CLIENT_SECRET_SWNGK": "<stis-oauth-client-secret>",
+    "CLEARVIEW_SECRET_EXPIRES_SWNGK": "<yyyy-mm-dd>",
+    "CLEARVIEW_ENABLED": "false",
+    "CLEARVIEW_LIVE_ENABLED": "false",
+
     "AUDIT_STORAGE_ACCOUNT": "",
     "AUDIT_TABLE": "AccessAudit"
   },
