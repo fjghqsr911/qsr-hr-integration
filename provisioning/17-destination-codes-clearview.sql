@@ -3,7 +3,7 @@
 -- run discover first, then copy the job and termination reason lists from its report into the VALUES block below.
 -- Each row: code_type, company, UKG code, Clearview code, Clearview id, note. company = the UKG company whose Clearview
 -- organization the pair belongs to (SWN6T or SWNGK); empty = shared by both organizations (stores and company rows are).
---   job:          UKG job code (SF, SS, TL, NS, PR, CA, TR, GM, RM, RMH, RMIT) to Clearview jobCode (destination_code) and
+--   job:          UKG job code (SF, SS, TL, NS, PR, CA, TR, GM, RM, RMH, RMIT, GMIT) to Clearview jobCode (destination_code) and
 --                 organization jobId (destination_id), per company: the jobCode is the same in both organizations, the jobId differs
 --   termination:  UKG termination category (Voluntary, Involuntary, Unknown, No show, Administrative) to Clearview terminationReasonId
 --                 (destination_code = destination_id = the id). Without a row the connector uses CLEARVIEW_TERMINATION_REASON_ID.
@@ -37,6 +37,7 @@ INSERT INTO @codes (code_type, company, ukg_code, destination_code, destination_
     ('job',         'SWN6T', 'RM',           '4',     '91',    'org 18 Managers - Restaurant Manager'),
     ('job',         'SWN6T', 'RMH',          '4',     '91',    'org 18 Managers - Restaurant Manager H'),
     ('job',         'SWN6T', 'RMIT',         '4',     '91',    'org 18 Managers - Restaurant Mgr in Train'),
+    ('job',         'SWN6T', 'GMIT',         '4',     '91',    'org 18 Managers - General Mgr in Train'),
     -- STIS, organization 1690
     ('job',         'SWNGK', 'SF',           '1',     '9039',  'org 1690 Counter Staff - Storefront'),
     ('job',         'SWNGK', 'SS',           '10',    '42436', 'org 1690 Supervisor'),
@@ -48,6 +49,7 @@ INSERT INTO @codes (code_type, company, ukg_code, destination_code, destination_
     ('job',         'SWNGK', 'RM',           '4',     '9042',  'org 1690 Managers - Restaurant Manager'),
     ('job',         'SWNGK', 'RMH',          '4',     '9042',  'org 1690 Managers - Restaurant Manager H'),
     ('job',         'SWNGK', 'RMIT',         '4',     '9042',  'org 1690 Managers - Restaurant Mgr in Train (by rule; none in roster)'),
+    ('job',         'SWNGK', 'GMIT',         '4',     '9042',  'org 1690 Managers - General Mgr in Train (by rule; none in roster)'),
     -- shared: every termination category -> the reason Flexspring uses in both organizations (also the configured default)
     ('termination', '',      'Voluntary',    '13078', '13078', 'X-2026+ See UKG for Reason - what Flexspring sends for every termination');
 
