@@ -50,4 +50,20 @@ function fakePool(answer = () => ({ recordset: [], recordsets: [[]] })) {
   return pool;
 }
 
-module.exports = { DIST, FAKE_YEAR, test, report, summary, assert, eq, noYear, stubModule, fakePool };
+/** fetch stub: records requests; `answers` maps "METHOD /api/v2/path" to [status, body] or a function (call index aware). */
+function fakeFetch(answers) {
+  const calls = [];
+  const fn = async (url, init) => {
+    const u = new URL(url); const key = `${init.method} ${u.pathname}`;
+    calls.push({ method: init.method, path: u.pathname, query: Object.fromEntries(u.searchParams), body: init.body ? JSON.parse(init.body) : undefined });
+    let a = answers[key] ?? answers["*"] ?? [404, { message: "Not Found" }];
+    if (typeof a === "function") a = a(calls.filter(c => `${c.method} ${c.path}` === key).length);
+    if (a instanceof Error) throw a;
+    const [status, body] = a;
+    return { ok: status >= 200 && status < 300, status, text: async () => (body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body)) };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+module.exports = { DIST, FAKE_YEAR, test, report, summary, assert, eq, noYear, stubModule, fakePool, fakeFetch };

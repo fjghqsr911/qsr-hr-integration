@@ -1,6 +1,8 @@
 import { Connector, DeliveryContext, DeliveryError, ExecuteResult, PendingCreate, Plan, Sensitive, SensitiveNeed } from "../delivery";
 import { ClearviewClient, ClearviewError } from "./client";
 import { MapperConfig, DEFAULT_MAPPER_CONFIG, plan as planFor, redactForHash, redactForStore, sensitiveNeeds } from "./mapper";
+import { foldName, sameName } from "../names";
+export { foldName, sameName };                      // moved to ../names; re-exported for existing imports
 
 /*
   Executes a mapper Plan against Clearview: resolves the "$lookup" placeholders with GETs, checks idempotency before
@@ -37,10 +39,6 @@ export class ClearviewApiReads implements ClearviewReads {
 }
 
 const isActive = (status: unknown) => /^a/i.test(String(status ?? ""));
-/** Letters only, upper-cased, accents stripped: O'Brien / OBRIEN / O Brien / Ó Brien compare equal. */
-export const foldName = (s: unknown) => String(s ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z]/g, "");
-/** Same last name ignoring punctuation, spaces, case and accents; never true for an empty name. */
-export const sameName = (a: unknown, b: unknown) => { const x = foldName(a); return x !== "" && x === foldName(b); };
 const stdOf = (detail: any) => detail?.standardInformation ?? detail ?? {};
 const idOf = (detail: any): number | null => { const id = Number(stdOf(detail)?.employeeId); return Number.isInteger(id) && id > 0 ? id : null; };
 

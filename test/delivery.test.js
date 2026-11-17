@@ -290,7 +290,7 @@ module.exports = async () => {
   });
 
   // ---------------------------------------------------------------- SqlDeliveryStore ----------------------------------------------------------------
-  await test("store SQL: claim applies the blocking rule, due filter, action order and TOP cap; lock uses run_type delivery", async () => {
+  await test("store SQL: claim applies the blocking rule, due filter, action order and TOP cap; lock uses run_type delivery:<destination>", async () => {
     assert(/status = 'dead' OR \(status IN \('failed', 'waiting'\) AND next_attempt_utc > SYSUTCDATETIME\(\)\)/.test(CLAIM_SQL), "blocking rule");
     assert(/d\.status IN \('pending', 'failed', 'waiting'\)/.test(CLAIM_SQL) && /next_attempt_utc IS NULL OR d\.next_attempt_utc <= SYSUTCDATETIME\(\)/.test(CLAIM_SQL), "due filter");
     assert(/WHEN 'create' THEN 0 WHEN 'job' THEN 1 WHEN 'store' THEN 2 WHEN 'pay' THEN 3\s+WHEN 'update' THEN 4 WHEN 'terminate' THEN 5/.test(CLAIM_SQL), "action order");
@@ -309,10 +309,59 @@ module.exports = async () => {
     const s = new SqlDeliveryStore(pool, "clearview");
     eq(await s.isRunning(), false); eq(await s.startRun(), "RUN");
     await s.finishRun("RUN", "succeeded", { processed: 3, calls: 2 });
-    assert(/run_type = 'delivery' AND status = 'running'/.test(pool.calls[0].text) && /'delivery'/.test(pool.calls[1].text), "lock on run_type delivery");
+    assert(/run_type IN \('delivery', @rt\) AND status = 'running'/.test(pool.calls[0].text) && /VALUES \(@id, @rt,/.test(pool.calls[1].text), "lock on run_type delivery:<destination> (a legacy 'delivery' row still blocks)");
+    eq([pool.calls[0].inputs.rt, pool.calls[1].inputs.rt], ["delivery:clearview", "delivery:clearview"], "the destination is part of the run type");
     eq(pool.calls[2].inputs, { id: "RUN", s: "succeeded", p: 3, c: 2, err: null });
     await s.claim("clearview", 200);
     eq(pool.calls[3].text, CLAIM_SQL); eq(pool.calls[3].inputs, { destination: "clearview", limit: 200 });
+  });
+
+  await test("store SQL: the run lock is per destination (run_type delivery:<destination>); a legacy delivery row blocks every destination", async () => {
+    // one sync_runs table shared by two stores: a running clearview run must not make rosnet skip its run, and the other way round
+    const running = [];
+    const pool = fakePool((text, inputs) => /INSERT INTO stage.sync_runs/.test(text) ? (running.push(inputs.rt), { recordset: [{ run_id: `RUN-${inputs.rt}` }] }) :
+      /SELECT COUNT\(\*\) AS n FROM stage.sync_runs/.test(text) ? { recordset: [{ n: running.filter(rt => rt === "delivery" || rt === inputs.rt).length }] } : { recordset: [] });
+    const cv = new SqlDeliveryStore(pool, "clearview"), rn = new SqlDeliveryStore(pool, "rosnet");
+    eq(await cv.startRun(), "RUN-delivery:clearview");
+    eq([await cv.isRunning(), await rn.isRunning()], [true, false], "a clearview run does not block rosnet");
+    await rn.startRun(); eq([await cv.isRunning(), await rn.isRunning()], [true, true]);
+    running.length = 0; running.push("delivery");                       // a run started by the previous build, still inside its 30 minutes
+    eq([await cv.isRunning(), await rn.isRunning()], [true, true], "a legacy run blocks both");
+    for (const d of ["clearview", "rosnet"]) assert(`delivery:${d}`.length <= 20, "run_type fits varchar(20)");
+  });
+
+  await test("store SQL: xref payroll / POS ids are written with the id and a null never erases a stored one; read back with the context", async () => {
+    const pool = fakePool(() => ({ recordset: [] }));
+    const s = new SqlDeliveryStore(pool, "rosnet");
+    await s.upsertXref("rosnet", "E1", "EWLTH200NRY0", "matched", { payrollId: "100234", posId: "417" });
+    eq(pool.calls[0].inputs, { destination: "rosnet", employeeId: "E1", externalId: "EWLTH200NRY0", source: "matched", payrollId: "100234", posId: "417" });
+    assert(/payroll_id = COALESCE\(@payrollId, t\.payroll_id\), pos_id = COALESCE\(@posId, t\.pos_id\)/.test(pool.calls[0].text), "COALESCE on update");
+    assert(/INSERT \(destination, employee_id, external_id, source, payroll_id, pos_id\)/.test(pool.calls[0].text));
+    await s.upsertXref("rosnet", "E1", "EWLTH200NRY0", "matched");          // clearview-style call: no ids
+    eq([pool.calls[1].inputs.payrollId, pool.calls[1].inputs.posId], [null, null]);
+    await s.upsertXrefMany([{ employeeId: "E2", externalId: "X2", source: "extract", payrollId: "100235", posId: null }]);
+    assert(/payrollId varchar\(20\), posId varchar\(40\)/.test(pool.calls[2].text) && /COALESCE\(s\.payroll_id, t\.payroll_id\)/.test(pool.calls[2].text), "bulk upsert carries the ids");
+    eq(JSON.parse(pool.calls[2].inputs.rows)[0].payrollId, "100235");
+  });
+
+  await test("runner: a connector without resolveCreated (no staging step) skips the pending-creates pass; ids learned on execute reach the store", async () => {
+    const store = fakeStore([row(1, { action: "create" })]);
+    let pendingAsked = 0; const orig = store.pendingCreates?.bind(store); store.pendingCreates = async (...a) => { pendingAsked++; return orig ? orig(...a) : []; };
+    const seen = []; const origUpsert = store.upsertXref.bind(store); store.upsertXref = async (...a) => { seen.push(a); return origUpsert(...a); };
+    const c = fakeConnector({ execute: async (plan) => ({ responseRef: "add:ok", xref: { externalId: "EWLTH200NRY0", source: "created", payrollId: "100234", posId: "417" } }) });
+    delete c.resolveCreated;
+    const { r } = await run(store, c);
+    eq([r.status, r.sent, pendingAsked], ["succeeded", 1, 0], "no pending-creates query without resolveCreated");
+    eq(seen[0].slice(0, 4), ["clearview", "E1", "EWLTH200NRY0", "created"]); eq([seen[0][4].payrollId, seen[0][4].posId], ["100234", "417"]);
+  });
+
+  await test("runner: the shadow warning names the destination's own live switch", async () => {
+    const store = fakeStore([row(1)]);
+    const a = await run(store, fakeConnector(), ukg(), { liveEnabled: false });
+    assert(a.logs.some(l => /live stores run as shadow \(CLEARVIEW_LIVE_ENABLED is not true\)/.test(l)), a.logs.join("\n"));
+    const store2 = fakeStore([row(2)]);
+    const b = await run(store2, fakeConnector(), ukg(), { liveEnabled: false, liveSettingName: "ROSNET_LIVE_ENABLED" });
+    assert(b.logs.some(l => /live stores run as shadow \(ROSNET_LIVE_ENABLED is not true\)/.test(l)), b.logs.join("\n"));
   });
 
   await test("store SQL: mark transitions write the right statuses and never a value; context maps rows; codes map upper-cases UKG codes", async () => {
@@ -326,7 +375,8 @@ module.exports = async () => {
     const d = mapClaimedRow({ delivery_id: "9", destination: "clearview", event_key: Buffer.alloc(32), kind: "event", employee_id: "E1", event_type: "Pay change", action: "pay", effective_date: new Date("2026-11-01T00:00:00Z"), store: "T22446", status: "pending", attempts: 0 });
     eq([d.deliveryId, d.effectiveDate, d.attempts], [9, "2026-11-01", 0]);
     const ctx = await s.loadContext(d);
-    eq(ctx.storeMode, "live"); eq(ctx.employment.companyId, "SWN6T"); eq(ctx.employment.lastHireDate, "2026-01-02"); eq(ctx.xref, { externalId: "55501", source: "extract" });
+    eq(ctx.storeMode, "live"); eq(ctx.employment.companyId, "SWN6T"); eq(ctx.employment.lastHireDate, "2026-01-02"); eq(ctx.xref, { externalId: "55501", source: "extract", payrollId: null, posId: null });
+    assert(/SELECT external_id, source, payroll_id, pos_id FROM xref\.employees/.test(CONTEXT_SQL), "context reads the payroll and POS ids");
     eq(ctx.event.toStore, "T22446"); eq(ctx.codes.store.get(codeKey("", "T22446")), { ukgCode: "T22446", company: "", destinationCode: "122446", destinationId: "2283" }); eq(ctx.codes.store.size, 1);
     eq(findCode(ctx.codes, "job", "SWNGK", "sh").destinationId, "70077"); eq(findCode(ctx.codes, "job", "SWN6T", "SH"), undefined, "a company row never applies to another company");
     assert(/SELECT code_type, company, ukg_code/.test(pool.calls.find(c => /ref.destination_codes/.test(c.text)).text), "codes are read with their company");
@@ -344,7 +394,7 @@ module.exports = async () => {
     eq(await s.purgeShadowPayloads("clearview", 30), 0);
     eq(await s.queueStats("clearview"), { pending: 0, waiting: 0, failed: 0, dead: 0, oldestPendingMinutes: null });
     await s.upsertXref("clearview", "E1", "55501", "created");
-    eq(pool.calls[pool.calls.length - 1].inputs, { destination: "clearview", employeeId: "E1", externalId: "55501", source: "created" });
+    eq(pool.calls[pool.calls.length - 1].inputs, { destination: "clearview", employeeId: "E1", externalId: "55501", source: "created", payrollId: null, posId: null });
   });
 
   await test("canonicalJson / payloadHash: deterministic", () => {

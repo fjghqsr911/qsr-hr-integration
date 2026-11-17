@@ -17,6 +17,7 @@ module.exports = async () => {
   stubModule("shared/sql.js", { getSharedHubPool: async () => fakePool(), resetSharedHubPool() {}, openHubPool: async () => fakePool(), sql: realSql });
   stubModule("shared/audit.js", { writeAudit: async (e) => { if (auditFails) throw new Error("down"); audits.push(e); }, probeAudit: async () => 1 });
   stubModule("shared/connectors.js", {
+    enabledDestinations: () => (process.env.CLEARVIEW_ENABLED === "true" ? ["clearview"] : []),
     runConnector: async (destination, _ctx, trigger) => { connectorRuns.push(`${destination}:${trigger}`); const r = connectorResult(); if (r instanceof Error) throw r; return r; },
     runDiscovery: async (_ctx, what) => { discoveries.push(what); return { what, organizations: [], stores: { paired: 0, written: 0, unpairedHub: [], unpairedClearview: [] }, staleMappings: [] }; }
   });

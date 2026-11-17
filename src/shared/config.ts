@@ -99,6 +99,41 @@ export const config = {
   /** Days a masked shadow payload is kept in out.shadow_payloads. */
   get hubShadowRetentionDays() { return parseInt(process.env.HUB_SHADOW_RETENTION_DAYS ?? "30", 10); },
 
+  // ---- Rosnet connector (phase 6): Employee Data Transfer API -> NCR HR Bridge -> Aloha, company SWN1U ----
+  /** EDT API base, no default. Production https://wfmt-api.rosnet.com; the sandbox (https://wfmt-api.rosnetqa.com) is for
+   *  local testing with synthetic data only: in Azure a sandbox host is never called. */
+  get rosnetBaseUrl() { const v = presentValue(process.env.ROSNET_BASE_URL); return v ? v.replace(/\/+$/, "") : null; },
+  /** Token endpoint. Production https://iam.rosnet.com/connect/token; sandbox https://iam.rosnetqa.com/connect/token. */
+  get rosnetTokenUrl() { return presentValue(process.env.ROSNET_TOKEN_URL); },
+  get rosnetScope() { return presentValue(process.env.ROSNET_SCOPE) ?? "wfm.write"; },
+  get rosnetApiVersion() { return presentValue(process.env.ROSNET_API_VERSION) ?? "1.0"; },
+  /** One OAuth client for the company (secret via Key Vault); null when unset or still an unresolved Key Vault reference. */
+  get rosnetClientId() { return presentValue(process.env.ROSNET_CLIENT_ID); },
+  get rosnetClientSecret() { return presentValue(process.env.ROSNET_CLIENT_SECRET); },
+  /** Optional, set by hand: when the OAuth secret expires (ISO date). Diagnostics warns 60 days before. */
+  get rosnetSecretExpires(): string | null {
+    const v = presentValue(process.env.ROSNET_SECRET_EXPIRES);
+    return v && !Number.isNaN(Date.parse(v)) ? v : null;
+  },
+  /** Sent on every request: Rosnet's Cloudflare zone challenges requests without a descriptive User-Agent. */
+  get rosnetUserAgent() { return presentValue(process.env.ROSNET_USER_AGENT) ?? "QUICKWEN-UKG-EDT-Integration/1.0"; },
+  /** Rosnet client code (GET /Location and the token's client_clientCode claim). */
+  get rosnetClientCode() { return presentValue(process.env.ROSNET_CLIENT_CODE) ?? "QUICKWEN"; },
+  /** UKG companies sent to Rosnet. */
+  get rosnetCompanies() { return list("ROSNET_COMPANIES", "SWN1U").map(s => s.toUpperCase()); },
+  /** Termination code used when ref.destination_codes has no row for the category (1 = Termination). */
+  get rosnetTermCode() { return parseInt(process.env.ROSNET_TERM_CODE ?? "1", 10); },
+  /** false (default): ssn is sent as null, which Rosnet accepts. true: the real SIN is sent. */
+  get rosnetSendSin() { return (process.env.ROSNET_SEND_SIN ?? "").toLowerCase() === "true"; },
+  /** Timer and after-sync runs. Off unless explicitly "true"; manual runs are always allowed. */
+  get rosnetEnabled() { return (process.env.ROSNET_ENABLED ?? "").toLowerCase() === "true"; },
+  /** Kill switch: false = every store behaves as shadow, nothing is sent. */
+  get rosnetLiveEnabled() { return (process.env.ROSNET_LIVE_ENABLED ?? "").toLowerCase() === "true"; },
+  /** A live delivery takes 5 to 15 s (Rosnet reads and writes are slow), so a run takes fewer than Clearview does. */
+  get rosnetMaxPerRun() { return parseInt(process.env.ROSNET_MAX_PER_RUN ?? "60", 10); },
+  get rosnetWaitingAlertDays() { return parseInt(process.env.ROSNET_WAITING_ALERT_DAYS ?? "5", 10); },
+  get rosnetTimeoutMs() { return parseInt(process.env.ROSNET_TIMEOUT_MS ?? "90000", 10); },
+
   // ---- Entra ID sync (Microsoft Graph via the Function App managed identity) ----
   /** Timer and after-sync Entra snapshot / compare runs. Off unless explicitly "true"; manual runs are always allowed. */
   get entraSyncEnabled() { return (process.env.ENTRA_SYNC_ENABLED ?? "").toLowerCase() === "true"; },

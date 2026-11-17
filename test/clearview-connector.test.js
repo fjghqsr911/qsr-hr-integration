@@ -1,6 +1,6 @@
 /* Clearview client (key handling, retries, safe errors), connector call sequences + idempotency, discovery pairing. */
 const path = require("path");
-const { DIST, FAKE_YEAR, test, report, assert, eq } = require("./helpers");
+const { DIST, FAKE_YEAR, test, report, assert, eq, fakeFetch } = require("./helpers");
 
 const KEY = "11111111-2222-3333-4444-555555555555";
 const SIN = "123456789";
@@ -13,21 +13,6 @@ module.exports = async () => {
   const { DeliveryError } = require(path.join(DIST, "shared", "delivery.js"));
 
   // ---------------------------------------------------------------- client ----------------------------------------------------------------
-  /** fetch stub: records requests; `answers` maps "METHOD /api/v2/path" to [status, body] or a function (call index aware). */
-  function fakeFetch(answers) {
-    const calls = [];
-    const fn = async (url, init) => {
-      const u = new URL(url); const key = `${init.method} ${u.pathname}`;
-      calls.push({ method: init.method, path: u.pathname, query: Object.fromEntries(u.searchParams), body: init.body ? JSON.parse(init.body) : undefined });
-      let a = answers[key] ?? answers["*"] ?? [404, { message: "Not Found" }];
-      if (typeof a === "function") a = a(calls.filter(c => `${c.method} ${c.path}` === key).length);
-      if (a instanceof Error) throw a;
-      const [status, body] = a;
-      return { ok: status >= 200 && status < 300, status, text: async () => (body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body)) };
-    };
-    fn.calls = calls;
-    return fn;
-  }
   const keyCreds = (keys) => new Map(Object.entries(keys).map(([c, key]) => [c, { mode: "key", key }]));
   const client = (fetchImpl, keys = { SWN6T: KEY }, extra = {}) => new ClearviewClient({ baseUrl: "https://api.example.test/", credentials: keyCreds(keys), timeoutMs: 20000, fetchImpl, sleep: async () => {}, ...extra });
   const TOKEN_URL = "https://login.example.test/oauth2/token";

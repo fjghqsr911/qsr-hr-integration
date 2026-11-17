@@ -4,7 +4,7 @@ import { createHash } from "crypto";
   Generic delivery runner: drains out.deliveries for one destination (Clearview today, Rosnet in phase 6).
   Pure logic over the DeliveryStore / Connector / UkgSensitiveSource interfaces so it is testable with fakes.
 
-  Per run:  lock (stage.sync_runs run_type 'delivery') -> claim a batch (per-employee blocking rule, action order)
+  Per run:  lock (stage.sync_runs run_type 'delivery:<destination>') -> claim a batch (per-employee blocking rule, action order)
             -> per delivery: re-read the store mode, read what the action needs from UKG, plan -> hash
                -> shadow (masked copy stored) | live (unchanged by hash, else execute and record last_sent + xref)
             -> resolveCreated (imports Payroll has added) -> purge old shadow payloads -> queue summary log line.
@@ -48,11 +48,14 @@ export function findCode(codes: CodeMaps, type: CodeType, company: string | null
   return codes[type].get(codeKey(company, ukgCode)) ?? codes[type].get(codeKey("", ukgCode));
 }
 
+/** Further ids a destination keeps per employee (Rosnet: payroll id = Aloha Export ID, POS id = the id Aloha assigned). */
+export interface XrefIds { payrollId?: string | null; posId?: string | null; }
+
 export interface DeliveryContext {
   delivery: ClaimedDelivery;
   event: EventContext | null;                       // null when the event no longer exists
   employment: EmploymentContext | null;             // the employment record the event belongs to
-  xref: { externalId: string; source: string } | null;
+  xref: ({ externalId: string; source: string } & XrefIds) | null;   // the destination's ids for this employee
   codes: CodeMaps;
   storeMode: "off" | "shadow" | "live";             // re-read at send time
   lastSent: Map<string, Buffer>;                    // operation -> payload hash of what was last sent live
@@ -89,7 +92,7 @@ export class DeliveryError extends Error {
 export interface ExecuteResult {
   responseRef: string | null;
   warning?: string;                                                  // recorded in last_error, delivery still sent
-  xref?: { externalId: string; source: "created" | "matched" };      // Clearview id learned on the way
+  xref?: { externalId: string; source: "created" | "matched" } & XrefIds;      // destination id(s) learned on the way
 }
 
 export interface PendingCreate { deliveryId: number; employeeId: string; companyId: string | null; employeeNumber: string | null; lastName: string | null; finishedUtc: Date; }
@@ -102,10 +105,11 @@ export interface Connector {
   redactForHash(payload: unknown): unknown;
   redactForStore(payload: unknown): unknown;
   execute(plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult>;
-  resolveCreated(pending: PendingCreate): Promise<{ externalId: string; source: "created" | "matched" } | null>;
+  /** Optional: only for a destination whose creates are approved later by a person (the Clearview import staging). */
+  resolveCreated?(pending: PendingCreate): Promise<{ externalId: string; source: "created" | "matched" } | null>;
   /** Optional, live only, before a create is planned without an xref: look the employee up at the destination so an
    *  employee it already has (return from leave, rehire, a hire the previous integration created) is rehired, not imported twice. */
-  resolveExisting?(ctx: DeliveryContext): Promise<{ externalId: string; source: "matched" } | null>;
+  resolveExisting?(ctx: DeliveryContext): Promise<({ externalId: string; source: "matched" } & XrefIds) | null>;
 }
 
 export interface QueueStats { pending: number; waiting: number; failed: number; dead: number; oldestPendingMinutes: number | null; }
@@ -124,7 +128,7 @@ export interface DeliveryStore {
   markWaiting(deliveryId: number, nextAttemptUtc: Date, reason: string): Promise<void>;
   markSkipped(deliveryId: number, reason: string): Promise<void>;
   markReview(deliveryId: number, reason: string): Promise<void>;
-  upsertXref(destination: string, employeeId: string, externalId: string, source: "created" | "matched"): Promise<void>;
+  upsertXref(destination: string, employeeId: string, externalId: string, source: "created" | "matched", ids?: XrefIds): Promise<void>;
   pendingCreates(destination: string): Promise<PendingCreate[]>;
   queueStats(destination: string): Promise<QueueStats>;
   purgeShadowPayloads(destination: string, retentionDays: number): Promise<number>;
@@ -135,6 +139,7 @@ export interface RunOptions {
   maxPerRun: number;
   waitingAlertDays: number;
   shadowRetentionDays: number;
+  liveSettingName?: string;                         // named in the "live stores run as shadow" warning (default CLEARVIEW_LIVE_ENABLED)
   now?: () => Date;
   log?: (m: string) => void;
   warn?: (m: string) => void;
@@ -221,7 +226,7 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
       let live = ctx.storeMode === "live";
       if (live && (!opts.liveEnabled || !credentials)) {
         live = false;
-        if (!shadowWarned) { warn(`${destination}: live stores run as shadow (${!opts.liveEnabled ? "CLEARVIEW_LIVE_ENABLED is not true" : `no credentials for ${company}`})`); shadowWarned = true; }
+        if (!shadowWarned) { warn(`${destination}: live stores run as shadow (${!opts.liveEnabled ? `${opts.liveSettingName ?? "CLEARVIEW_LIVE_ENABLED"} is not true` : `no credentials for ${company}`})`); shadowWarned = true; }
       }
 
       try {
@@ -229,7 +234,7 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
         if (live && !ctx.xref && d.action === "create" && connector.resolveExisting) {
           calls++;
           const found = await connector.resolveExisting(ctx);
-          if (found) { await store.upsertXref(destination, d.employeeId, found.externalId, found.source); ctx.xref = found; }
+          if (found) { await store.upsertXref(destination, d.employeeId, found.externalId, found.source, found); ctx.xref = found; }
         }
         // what the action needs from UKG, read at send time in both modes (so shadow surfaces "SIN missing in UKG")
         const sensitive = await readSensitive(ukg, d.employeeId, connector.sensitiveNeeds(ctx), sensitiveCache, () => calls++);
@@ -250,7 +255,7 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
 
         calls++;
         const result = await connector.execute(plan, ctx);
-        if (result.xref) { await store.upsertXref(destination, d.employeeId, result.xref.externalId, result.xref.source); ctx.xref = result.xref; }
+        if (result.xref) { await store.upsertXref(destination, d.employeeId, result.xref.externalId, result.xref.source, result.xref); ctx.xref = { ...ctx.xref, ...result.xref }; }
         await store.markSent(d.deliveryId, hash, plan.operation, result.responseRef, result.warning ?? null);
         r.sent++;
       } catch (e: any) {
@@ -282,13 +287,15 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
       }
     }
 
-    // imports Payroll has since added: learn Clearview's employeeId so the employee's later deliveries can go
-    if (!aborted) {
+    // imports Payroll has since added: learn the destination's employee id so the employee's later deliveries can go
+    // (only a connector with a staging step implements resolveCreated)
+    const resolveCreated = connector.resolveCreated?.bind(connector);
+    if (!aborted && resolveCreated) {
       for (const p of await store.pendingCreates(destination)) {
         if (!connector.hasCredentials(p.companyId)) continue;
         try {
           calls++;
-          const found = await connector.resolveCreated(p);
+          const found = await resolveCreated(p);
           if (found) { await store.upsertXref(destination, p.employeeId, found.externalId, found.source); r.resolved++; continue; }
           const days = (now().getTime() - new Date(p.finishedUtc).getTime()) / 86_400_000;
           if (days >= opts.waitingAlertDays)

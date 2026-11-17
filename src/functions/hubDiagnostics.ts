@@ -4,7 +4,7 @@ import { config, KEY_VAULT_PREFIX } from "../shared/config";
 import { getSharedHubPool, resetSharedHubPool, sql } from "../shared/sql";
 import { ukgGet, UkgError } from "../shared/ukg";
 import { probeAudit } from "../shared/audit";
-import { buildClearviewClient, clearviewCredentials } from "../shared/connectors";
+import { buildClearviewClient, buildRosnetClient, clearviewCredentials, rosnetCredentials } from "../shared/connectors";
 import { STATS_SQL } from "../shared/deliveryStore";
 import { buildGraphClient } from "../shared/graph";
 import { torontoToday } from "../shared/entra/compare";
@@ -212,6 +212,58 @@ export async function checkClearview(now: Date = new Date()): Promise<Component 
 
 /** The Entra sync: token + GET /users?$top=1 probe (skipped unless the sync is enabled or a snapshot exists), age of the
  *  last entra.sync_runs row (warn past 26 h when enabled), counts, write switch. Never writes to Graph. */
+/** The Rosnet destination: settings, the one OAuth credential, a timed GET /Location (read-only; skipped without
+ *  credentials and for a sandbox host in Azure), secret expiry, queue counts and the mapping table counts. */
+export async function checkRosnet(now: Date = new Date()): Promise<Component & { name: "rosnet" }> {
+  const enabled = config.rosnetEnabled, live = config.rosnetLiveEnabled;
+  const creds = rosnetCredentials();
+  const notes: string[] = [];
+  let secretWarn = false;
+  const secretExpiresUtc = creds.secretExpires ? new Date(creds.secretExpires).toISOString() : null;
+  if (creds.secretExpires) {
+    const days = Math.floor((new Date(creds.secretExpires).getTime() - now.getTime()) / 86_400_000);
+    if (days < 0) { notes.push(`OAuth secret expired ${-days} day(s) ago: ask Rosnet for a new one`); secretWarn = true; }
+    else if (days <= SECRET_WARN_DAYS) { notes.push(`OAuth secret expires in ${days} day(s): ask Rosnet for a new one`); secretWarn = true; }
+  }
+
+  let api: Component | { status: "skipped"; detail?: string } = { status: "skipped" };
+  if (creds.status === "present" && !creds.callable) api = { status: "skipped", detail: "sandbox host configured: never called from Azure" };
+  else if (creds.callable) {
+    const started = Date.now();
+    try {
+      const loc = await buildRosnetClient().locations();
+      api = { status: "pass", ms: Date.now() - started, clientCode: loc.clientCode, locations: loc.locationNumbers.length };
+      if (loc.clientCode && loc.clientCode.toUpperCase() !== config.rosnetClientCode.toUpperCase()) notes.push(`Rosnet client code is ${loc.clientCode}, ROSNET_CLIENT_CODE is ${config.rosnetClientCode}`);
+    } catch (e: any) { api = { status: "fail", ms: Date.now() - started, detail: errText(e) }; }
+  }
+  if (creds.status === "missing") notes.push("no Rosnet settings (ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID, ROSNET_CLIENT_SECRET): Rosnet not called, live stores run as shadow");
+  if (creds.status === "partial") notes.push("some of ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID, ROSNET_CLIENT_SECRET are missing or unresolved: Rosnet not called, live stores run as shadow");
+  if (creds.status === "present" && !creds.callable) notes.push("the Rosnet settings point at the sandbox: not called from Azure, live stores run as shadow");
+  if (!enabled) notes.push("ROSNET_ENABLED is not \"true\": timer and after-sync runs are off");
+
+  let queue: Record<string, number | null> | null = null;
+  const codes: Record<string, number> = { store: 0, job: 0, termination: 0 };
+  let sqlError: string | null = null;
+  try {
+    const pool = await getSharedHubPool();
+    const stats: any = await pool.request().input("destination", sql.VarChar(20), "rosnet").query(STATS_SQL);
+    const row = stats.recordset?.[0] ?? {};
+    const n = (v: any) => Number(v ?? 0);
+    queue = { pending: n(row.pending), waiting: n(row.waiting), failed: n(row.failed), dead: n(row.dead),
+              oldestPendingMinutes: row.oldest_pending_minutes === null || row.oldest_pending_minutes === undefined ? null : Number(row.oldest_pending_minutes) };
+    const counts: any = await pool.request().input("destination", sql.VarChar(20), "rosnet").query(CODES_COUNT_SQL);
+    for (const r of counts.recordset ?? []) if (r.code_type in codes) codes[r.code_type] = Number(r.n);
+    if (codes.store === 0 || codes.job === 0) notes.push("no store or job mappings yet: run provisioning/25-destination-codes-rosnet.sql");
+  } catch (e: any) {
+    resetSharedHubPool();
+    sqlError = errText(e);
+  }
+
+  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (creds.status !== "present" || !creds.callable || !enabled || secretWarn || codes.store === 0 || codes.job === 0) ? "warn" : "pass";
+  const detail = [sqlError ? `queue unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
+  return { name: "rosnet", status, enabled, live, authMode: "oauth", credentials: creds.status, sandbox: creds.sandbox, secretExpiresUtc, api, queue, codes, ...(detail ? { detail } : {}) };
+}
+
 export async function checkEntra(admin: boolean = false, now: Date = new Date()): Promise<Component> {
   const enabled = config.entraSyncEnabled, writeEnabled = config.entraWriteEnabled;
   const notes: string[] = [];
@@ -283,19 +335,19 @@ export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): 
   const guard = async <T extends Component>(p: Promise<T> | T): Promise<T | Component> => {
     try { return await p; } catch (e: any) { return { status: "fail", detail: errText(e) }; }
   };
-  const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview, entra] = await Promise.all([
+  const [settings, sql, grants, audit, ukg, sync, callerStatus, clearview, entra, rosnet] = await Promise.all([
     guard(checkSettings(admin)), guard(checkSql()), guard(checkGrants(admin)), guard(checkAudit()),
-    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview()), guard(checkEntra(admin))
+    guard(checkUkg()), guard(checkSync()), guard(checkCaller(caller)), guard(checkClearview()), guard(checkEntra(admin)), guard(checkRosnet())
   ]);
 
   const body = {
     checkedUtc: new Date().toISOString(),
     caller: callerStatus, settings, sql, grants, audit, ukg, sync, entra,
-    destinations: [{ name: "clearview", ...clearview }] as Component[]      // Rosnet joins in phase 6
+    destinations: [{ name: "clearview", ...clearview }, { name: "rosnet", ...rosnet }] as Component[]
   };
   const statuses = [callerStatus, settings, sql, grants, audit, ukg, sync].map(c => c.status);
   const ok = statuses.filter(s => s === "pass").length, fail = statuses.filter(s => s === "fail").length;
-  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail} clearview=${clearview.status} entra=${entra.status}`);
+  ctx.log(`[diagnostics] by=${describeCaller(caller)} ok=${ok} fail=${fail} clearview=${clearview.status} rosnet=${rosnet.status} entra=${entra.status}`);
   return { status: 200, headers: NO_STORE, jsonBody: body };
 }
 

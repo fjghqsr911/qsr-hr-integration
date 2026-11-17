@@ -11,7 +11,7 @@ const contactConfig = (): ContactConfig => ({
   workPhoneFields: config.hubWorkPhoneFields, companyPhoneFields: config.hubCompanyPhoneFields
 });
 import { authorize, describeCaller, Roles, Scopes } from "../shared/auth";
-import { runConnector } from "../shared/connectors";
+import { enabledDestinations, runConnector } from "../shared/connectors";
 import { runEntraSyncJob } from "../shared/entra/runner";
 
 const ukgSource: UkgSource = { getAll: (path, perPage) => ukgGetAll(path, perPage, 500) };
@@ -32,15 +32,21 @@ async function runSync(ctx: InvocationContext, trigger: string): Promise<SyncRes
   }
 }
 
-/** Sync, then drain the Clearview queue when the sync produced events (CLEARVIEW_ENABLED) and refresh the Entra proposals
- *  (ENTRA_SYNC_ENABLED). A connector or Entra failure never fails the sync. */
+/** Drains the delivery queue of every enabled destination (CLEARVIEW_ENABLED ...), one after another. A connector failure is
+ *  logged and never fails the sync or the next destination. */
+async function deliverAll(ctx: InvocationContext, trigger: "after-sync" | "after-nightly"): Promise<void> {
+  for (const destination of enabledDestinations()) {
+    try { await runConnector(destination, ctx, trigger); }
+    catch (e: any) { ctx.error(`[${destination}] ${trigger} run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+  }
+}
+
+/** Sync, then drain each enabled destination's queue and refresh the Entra proposals (ENTRA_SYNC_ENABLED). A connector or
+ *  Entra failure never fails the sync. */
 export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string): Promise<SyncResult> {
   const result = await runSync(ctx, trigger);
   if (result.status === "succeeded" || result.status === "partial") {
-    if (config.clearviewEnabled) {
-      try { await runConnector("clearview", ctx, "after-sync"); }
-      catch (e: any) { ctx.error(`[clearview] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
-    }
+    await deliverAll(ctx, "after-sync");
     if (config.entraSyncEnabled) {
       try { await runEntraSyncJob(ctx, "after-sync"); }
       catch (e: any) { ctx.error(`[entra] after-sync run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
@@ -95,14 +101,11 @@ async function runNightlyJob(ctx: InvocationContext, trigger: string): Promise<N
   }
 }
 
-/** Nightly, then drain the Clearview queue (CLEARVIEW_ENABLED): the nightly rebuilds events for employees the intraday sync
- *  missed, and those should not wait for the hourly connector timer. A connector failure never fails the nightly. */
+/** Nightly, then drain each enabled destination's queue: the nightly rebuilds events for employees the intraday sync
+ *  missed, and those should not wait for the hourly connector timers. A connector failure never fails the nightly. */
 export async function runNightlyThenDeliver(ctx: InvocationContext, trigger: string): Promise<NightlyResult> {
   const result = await runNightlyJob(ctx, trigger);
-  if ((result.status === "succeeded" || result.status === "partial") && config.clearviewEnabled) {
-    try { await runConnector("clearview", ctx, "after-nightly"); }
-    catch (e: any) { ctx.error(`[clearview] after-nightly run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
-  }
+  if (result.status === "succeeded" || result.status === "partial") await deliverAll(ctx, "after-nightly");
   return result;
 }
 

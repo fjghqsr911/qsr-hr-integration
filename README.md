@@ -21,6 +21,8 @@ Azure Functions (Node 22, TypeScript, v4 model). Entra ID-protected API over UKG
 | `GET /api/hub/diagnostics` | `Employees.Summary.Write` | `Summary.Read` or `Summary.Admin` | Component health for the monitor's Diagnostics tab: `caller`, `settings`, `sql`, `grants`, `audit`, `ukg`, `sync`, `entra`, `destinations`, each `pass` / `warn` / `fail`. Read-only, not audited, always 200 (problems are statuses in the body). Setting / grant names are listed for `Summary.Admin` only; values never |
 | `GET/POST /api/hub/clearview/run` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Drain the Clearview delivery queue now (runs even when `CLEARVIEW_ENABLED` is off). Returns the run counts (`claimed`, `sent`, `shadow`, `unchanged`, `skipped`, `review`, `failed`, `dead`, `waiting`, `resolved`, `purged`, `queue`); 502 when the run failed (e.g. Clearview 401). Audited (`write`, field `deliveries`), fail-closed |
 | `POST /api/hub/clearview/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | `codes` (default): per organization key, Clearview's stores (paired on `tdlNumber` and written to `ref.destination_codes`), jobs, termination reasons and mandatory attributes, plus unpaired stores and stale mappings, as a report to fill `provisioning/17`. `employees`: seeds `xref.employees` (`source = extract`) from Clearview's employee list by employee number (last name compared with punctuation, spaces, case and accents ignored; a number unique on both sides links even when the last name changed). 409 while `CLEARVIEW_ENABLED` is not `true` (the first Clearview call starts billing). Audited (`write`), fail-closed |
+| `GET/POST /api/hub/rosnet/run` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Drain the Rosnet delivery queue now (runs even when `ROSNET_ENABLED` is off; without credentials every store runs as shadow). Returns the run counts; 502 when the run failed. Audited (`write`, field `deliveries`) before anything runs |
+| `POST /api/hub/rosnet/discover?what=codes\|employees` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Summary.Admin` | Read-only against Rosnet. `codes` (default): locations, job codes and termination codes; hub W stores paired with location numbers and written to `ref.destination_codes`; mappings Rosnet does not know listed. `employees`: seeds `xref.employees` (POS UID, payroll id, POS number) from the per-location lists. 409 without credentials. Counts and codes only, never names |
 | `GET /api/employees/{id}/sensitive?reveal=sin` | `Employees.Sensitive.Read` **and** `Employees.Sensitive.Reveal` | `Sensitive.Admin` | Same, with full SIN |
 | `POST /api/hub/entra/sync` | `Employees.Summary.Write` (or app role `Integration.Run`) | `Entra.Admin` | Run the [Entra sync](#entra-sync) now (snapshot, link, compare; never writes to Entra). Returns the run counts; 409 while another run holds the lock, 502 when the run failed. Audited (`write`, field `proposals`), fail-closed |
 | `POST /api/hub/entra/proposals/{id}/accept` | `Employees.Summary.Write` | `Entra.Admin` | `proposed` -> `accepted`, then applied at once (`applyOutcome` = `applied` / `failed` / `stale`) unless the proposal is due later (`due_later`, e.g. a disable on the date last worked) or `ENTRA_WRITE_ENABLED` is off (`writes_disabled`: the acceptance is still recorded). Returns the proposal; any other status -> 409. Audited (`write`, the field or kind), fail-closed |
@@ -60,6 +62,8 @@ user endpoints.
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
 | `clearviewConnectorTimer` | Timer, hourly at :30 | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. The timer is for retries, waiting deliveries and manual retries / queued events; new events do not wait for it, because the connector also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) and nightly (`hubNightlyTimer` / `hubNightlyRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |
+| `rosnetConnectorTimer` | Timer, hourly at :45 | Drains `out.deliveries` for destination `rosnet` (see [Rosnet connector](#rosnet-connector)). Does nothing unless `ROSNET_ENABLED` = `true`. Like Clearview, new events do not wait for it: every enabled connector runs right after each succeeded / partial intraday sync and nightly, each under its own lock (`run_type = delivery:<destination>`) |
+| `rosnetRun` / `rosnetDiscover` | `GET/POST /api/hub/rosnet/run`, `POST /api/hub/rosnet/discover` | Drain on demand; discovery. Same permissions as `hubSyncRun`, audited |
 | `entraSyncTimer` | Timer, 06:45 **UTC** daily (after the nightly) | Snapshots Entra users and groups, links them to employees and turns UKG differences into **proposals** (see [Entra sync](#entra-sync)). Does nothing unless `ENTRA_SYNC_ENABLED` = `true`. Also runs right after every succeeded / partial intraday sync when enabled. Never writes to Entra |
 | `entraSyncRun` | `POST /api/hub/entra/sync` | Same run on demand; always allowed. Role `Entra.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`; audited |
 
@@ -87,7 +91,8 @@ alone, so leave events are built from `stage.leave_periods` (script 23), never f
   `ref.destination_codes` when present, else the default 13078); a return from leave is sent as a **rehire** dated the day
   after the leave ends. Before any live create without an xref, the connector looks the employee up in Clearview by external
   id, then by employee number, and links them, so a return from leave (or a hire the previous integration created) is a
-  rehire rather than a second import. Rosnet does not take leave events.
+  rehire rather than a second import. Rosnet takes the same two leave events once `provisioning/26` has run (terminate on the
+  first day of leave with the Deactivate code, rehire on return).
 
 ### Nightly job (`hubNightlyTimer`, 06:15 UTC = 2:15 AM Toronto summer / 1:15 AM winter)
 1. Employment details for status A and L -> today's `stage.employment_snapshot` (Toronto date) + refresh current rows (with names)
@@ -141,6 +146,16 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `CLEARVIEW_WAITING_ALERT_DAYS` | Days after a sent import before `[delivery] waiting` is logged for an employee Payroll has not added | default `5` |
 | `CLEARVIEW_TIMEOUT_MS` | Clearview call timeout | default `20000` |
 | `HUB_SHADOW_RETENTION_DAYS` | Days masked shadow payloads are kept in `out.shadow_payloads` | default `30` |
+| `ROSNET_BASE_URL`, `ROSNET_TOKEN_URL` | Rosnet EDT API base and token endpoint. No default. Production: `https://wfmt-api.rosnet.com` and `https://iam.rosnet.com/connect/token`. The sandbox pair (`wfmt-api.rosnetqa.com`, `iam.rosnetqa.com`) is for local testing with synthetic data only: **in Azure a sandbox host is never called** | unset until production credentials exist |
+| `ROSNET_CLIENT_ID`, `ROSNET_CLIENT_SECRET` | The one OAuth2 client for the company (`ROSNET_CLIENT_SECRET` as a Key Vault reference to `rosnet-client-secret`). Without all four settings nothing calls Rosnet and every store runs as shadow | unset until production credentials exist |
+| `ROSNET_SECRET_EXPIRES` | Optional ISO date, set by hand: Diagnostics warns 60 days before | unset |
+| `ROSNET_ENABLED` | Timer + after-sync / after-nightly runs. Off: manual `/api/hub/rosnet/run` still works. Rosnet does not bill per call, so this is not a billing guard: **credentials** decide whether Rosnet is called | `false` until scripts 25 and 26 have run |
+| `ROSNET_LIVE_ENABLED` | Kill switch: `false` = every store behaves as shadow, even stores set to `live` | `false` until the pilot |
+| `ROSNET_COMPANIES`, `ROSNET_CLIENT_CODE` | UKG companies sent to Rosnet; Rosnet client code | defaults `SWN1U`, `QUICKWEN` |
+| `ROSNET_TERM_CODE` | Termination code when `ref.destination_codes` has neither the category nor a `Default` row | default `1` |
+| `ROSNET_SEND_SIN` | `true` sends the real SIN; otherwise `ssn` is sent as null, which Rosnet accepts | default `false` |
+| `ROSNET_SCOPE`, `ROSNET_API_VERSION`, `ROSNET_USER_AGENT` | OAuth scope, API version, and the User-Agent sent on every request (Rosnet's Cloudflare zone challenges requests without a descriptive one) | defaults `wfm.write`, `1.0`, `QUICKWEN-UKG-EDT-Integration/1.0` |
+| `ROSNET_MAX_PER_RUN`, `ROSNET_TIMEOUT_MS` | Deliveries per run (a live one takes 5 to 15 s) and the call timeout (Rosnet writes took up to 27 s in the sandbox) | defaults `60`, `90000` |
 | `ENTRA_SYNC_ENABLED` | Timer + after-sync Entra runs (snapshot, link, compare: proposals only). Manual `POST /api/hub/entra/sync` always works | `false` until `deploy/01-entra-graph-permissions.sh` has run and scripts 18-20 are in place, then `true` |
 | `ENTRA_WRITE_ENABLED` | Kill switch for **every** Graph write (apply, manual group members). Off: accept still records, apply and members answer 409 `writes_disabled` | `false` until the first proposals have been reviewed, then `true` |
 | `ENTRA_ACCOUNT_DOMAINS` | Account domains whose Entra users are snapshotted and matched to work emails | default `qsrgroup.ca` |
@@ -190,6 +205,8 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `20-entra-tables.sql` | Schema `entra`: `users`, `groups`, `group_members` (snapshot), `links`, `link_issues`, `rules`, `proposals`, `rejections`, `sync_runs`; grants the Function App user the schema plus SELECT on `ref.stores`, `rpt.v_directory` and `rpt.workforce_events`. Run after 18 and 19 and before the first Entra sync; the Diagnostics tab's entra row reports these objects and grants (skipped until they exist) |
 
 | `23-leave-periods.sql` | `stage.leave_periods` (leave of absence periods from UKG status history, dates only), `stage.usp_capture_status` (called by the syncs), `stage.usp_import_leave_periods` (LOA report load, `@dry_run = 1` to reconcile) and the purge updated to remove periods. Run before the updated 11; see [Leave of absence](#leave-of-absence-status-history-not-job-history) |
+| `25-destination-codes-rosnet.sql` | Rosnet code pairs: 36 W stores to location numbers, UKG jobs to Aloha job codes (the Flexspring lookup; `GMIT` is a proposal), termination categories to Rosnet termination codes (a proposal for HR to confirm). Safe to rerun |
+| `26-rosnet-events.sql` | Event types Rosnet takes beyond script 13: `Pay change` (pay), `Leave of absence` (terminate), `Return from leave` (create), `Cross-company transfer out` (terminate) |
 | `tools/loa-report-to-sql.py` | Converts the LOA History report export (.xlsx) into an `EXEC stage.usp_import_leave_periods` script holding employee numbers and dates only. `python -I loa-report-to-sql.py report.xlsx out.sql [--dry-run] [--no-rebuild]` |
 
 Leave rollout, in one sitting away from :05 past 10/14/18/22 UTC: run 23, then the updated 11, then a dry-run of the
@@ -215,7 +232,8 @@ phase 6), `src/shared/deliveryStore.ts` (SQL), `src/shared/clearview/` (`client`
 `src/shared/connectors.ts` (wiring) and `src/functions/clearviewConnector.ts` (timer + endpoints). Design: plan doc, "Phase 4".
 
 **Each run** (hourly timer, after each successful intraday sync or nightly, or `/api/hub/clearview/run`): lock via `stage.sync_runs`
-(`run_type = delivery`) → claim up to `CLEARVIEW_MAX_PER_RUN` due `pending` / `failed` / `waiting` rows, skipping employees that have a
+(`run_type = delivery:<destination>`, e.g. `delivery:clearview`: one lock per destination, so a second connector never makes
+the first skip its run) → claim up to `CLEARVIEW_MAX_PER_RUN` due `pending` / `failed` / `waiting` rows, skipping employees that have a
 blocking row (`dead`, or `failed` / `waiting` not yet due), ordered per employee by effective date then
 create < job < store < pay < update < terminate → per delivery: re-read the store's mode (`off` → `skipped`), read what the action
 needs from UKG at send time (person details for an import, pay for import / rehire / pay change), build the Clearview call
@@ -304,6 +322,61 @@ replacing that one class; the write calls and the New Hires lookups stay as they
 
 Tests: `test/clearview-mapper.test.js` (fixtures in `test/fixtures/clearview/`, one per operation), `test/delivery.test.js`,
 `test/clearview-connector.test.js`, `test/clearview-function.test.js`; mocks only.
+
+## Rosnet connector
+
+Phase 6 of the Flexspring replacement: the second destination on the same delivery runner. `src/shared/rosnet/` (`client`,
+pure `mapper`, `connector`, `discover`), wired in `src/shared/connectors.ts`, functions in `src/functions/rosnetConnector.ts`.
+Rosnet's Employee Data Transfer (EDT) API relays to NCR HR Bridge and Aloha CFC for company `SWN1U` (Wendy's, stores
+`W0####`, location number = the digits). Vendor guides: `Employee Data Transfer API Guide V3.0` in the parent folder.
+
+**What differs from Clearview**
+
+| Topic | Rosnet |
+|---|---|
+| Environments | Sandbox (`wfmt-api.rosnetqa.com`, `iam.rosnetqa.com`) and production (`wfmt-api.rosnet.com`, `iam.rosnet.com`). The sandbox only ever sees one synthetic employee; the deployed app never calls it |
+| Transport | Plain node `https` with a descriptive `User-Agent` on every request. Rosnet's Cloudflare zone challenges requests without one and challenges `fetch` even with it. `Accept: application/json` always (two endpoints answer 406 otherwise) |
+| Ids | We supply both: `posProvider_EmployeeUID` = UKG employee id, `payrollProvider_EmployeeUID` = UKG employee number (numeric, 9 digits at most). Aloha assigns the POS number, a different one at every location. `xref.employees` keeps all three (`external_id`, `payroll_id`, `pos_id`) |
+| Scope of a call | One location. Every operation starts with `GET /Employee/getEmployee/{uid}/{location}` (the Aloha record) and that state picks the call |
+| New hire | No staging: `addEmployee` creates the profile. No `waiting`, no `resolveCreated` |
+| SIN | Not sent (`ssn` null) unless `ROSNET_SEND_SIN` = `true` |
+| Timing | HR Bridge applies writes asynchronously (seconds to a minute; a profile appears before its jobs). Nothing is verified by reading back; a job or pay change for a profile that has not landed yet is retried |
+
+**Operations**
+
+| Hub action (event types) | Rosnet call, decided at send time |
+|---|---|
+| create (New hire, Rehire, Cross-company transfer in, Return from leave) | active at the location: nothing. Terminated profile there: `rehireEmployee` (same location). No profile there: `addEmployee`, also when a terminated profile exists at another store (`rehireEmployee` into a different location is never sent: see below) |
+| terminate (Termination, Hired but never worked, Administrative termination, Leave of absence, Cross-company transfer out) | `terminateEmployee` with the termination code of the category (`ref.destination_codes`, then the `Default` row, then `ROSNET_TERM_CODE`). Already terminated: nothing |
+| store (Store transfer, Temporary transfer) | `transferEmployee` (adds at the new location, terminates at the old one with the Transfer code), then the email at the new location once Aloha shows the profile there (`updateEmployeeInfo` answers 400 before that). Terminated profile at the new location: rehire there and terminate the old one. `borrowEmployee` is not used |
+| job (Promotion, Demotion, Job change) | `addJob` for the new code when it is missing, then `removeJob` for the old one when it is still on file. Two UKG jobs with the same Aloha code: skipped |
+| pay (Pay change) | `modifyJob` with the hourly rate, unless `POST /PayRate` already shows it |
+
+A repeat that Rosnet refuses as already existing (error 2500) or already active (2000) counts as sent. Failures: 401, 403 or
+a Cloudflare challenge abort the run with the rows untouched; a 400 is dead with Rosnet's message (its body is a JSON string
+holding `{"errorCode", "errorMessage"}`); network errors, timeouts, 429 and 5xx retry on the usual schedule.
+
+No profile is a 200 with an empty list (`POST /PayRate`: 204 with no body), never an error, so a 400 on a lookup is a failure
+and is never read as "no profile". A 200 on a write means accepted, not applied: in the sandbox `rehireEmployee` into a different
+location was tried three times (2026-11-17, with and without a profile at the target): one refusal, two answers of 200, and
+no change in Aloha. The connector therefore never sends it: a terminated profile at the target is rehired in place and a
+store without a profile gets `addEmployee`. A write that does not land only shows when a later change for the employee
+keeps retrying.
+
+**Going live**
+
+1. Run `provisioning/25` and `26` in the portal. Deploy with `ROSNET_ENABLED=true`, `ROSNET_LIVE_ENABLED=false` and no Rosnet
+   credentials: shadow runs make no Rosnet call. Set W stores to `shadow` in the monitor and review the payloads with HR
+   (job and termination code proposals in script 25).
+2. Production credentials: check them read-only with `rosnet-smoke-test.ps1 -Environment Production` (parent folder), store
+   the secret in `kv-hrint-prod-cc` as `rosnet-client-secret`, set the four settings, then
+   `POST /api/hub/rosnet/discover?what=codes` and `?what=employees`.
+3. One W store `live` with `ROSNET_LIVE_ENABLED=true`, then the rest when Flexspring's Rosnet feed is switched off.
+
+Sandbox tools (synthetic employee only): `rosnet-smoke-test.ps1`, `rosnet-sandbox-probe.ps1`,
+`rosnet-sandbox-write-test.ps1`, `rosnet-sandbox-followup-test.ps1` in the parent folder, and
+`node tools/rosnet-sandbox-harness.js [--write]`, which drives this connector's own code against the sandbox.
+Tests: `test/rosnet.test.js` (response shapes from the sandbox in `test/fixtures/rosnet/sandbox-shapes.json`).
 
 ## Entra sync
 

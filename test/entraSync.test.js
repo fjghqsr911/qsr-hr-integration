@@ -122,7 +122,7 @@ module.exports = async () => {
   stubModule("shared/sql.js", { getSharedHubPool: async () => fakePool(), resetSharedHubPool() {}, openHubPool: async () => fakePool(), sql: realSql });
   stubModule("shared/audit.js", { writeAudit: async (e) => { if (auditFails) throw new Error("down"); audits.push(e); }, probeAudit: async () => 1 });
   stubModule("shared/entra/runner.js", { runEntraSyncJob: async (_ctx, trigger) => { jobRuns.push(trigger); const r = jobResult(); if (r instanceof Error) throw r; return r; } });
-  stubModule("shared/connectors.js", { runConnector: async () => ({ status: "succeeded" }), runDiscovery: async () => ({}) });
+  stubModule("shared/connectors.js", { enabledDestinations: () => [], runConnector: async () => ({ status: "succeeded" }), runDiscovery: async () => ({}) });
   stubModule("shared/hubSync.js", { runIntradaySync: async () => syncResult, runNightly: async () => ({ status: "succeeded" }) });
   stubModule("shared/hubStore.js", { SqlHubStore: class {} });
   const timers = {};

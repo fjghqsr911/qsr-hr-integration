@@ -1,0 +1,359 @@
+{
+  "source": "Rosnet EDT sandbox write test, 2026-11-17T18:37:52Z (synthetic employee ZZTEST HUBCONNECTOR only) + follow-up test 2026-11-17T20:33:50Z",
+  "cfcEmployee": {
+    "birthDate": "1990-01-15T00:00:00Z",
+    "emailAddress": "zztest.hubconnector@example.com",
+    "employeeID": null,
+    "employeeUniqueID": "HUBTESTHESWX",
+    "firstName": "ZZTEST",
+    "lastName": "HUBCONNECTOR",
+    "hireDate": "1899-01-01T00:00:00Z",
+    "homeSiteID": "3126,6000",
+    "jobs": [
+      {
+        "accessLevelNumber": 1,
+        "endDate": "9999-12-31T23:59:59.9999999",
+        "jobCodeNumber": 1,
+        "jobName": "Crew",
+        "payRate": 0,
+        "performanceRating": null,
+        "performanceRatingNumber": 0,
+        "primary": false,
+        "rateReason": "BumpBidUp",
+        "startDate": "2026-11-13T00:00:00Z"
+      }
+    ],
+    "pos": {
+      "alohaExportID": "999055957",
+      "alohaMagCardOnly": false,
+      "alohaNickname": "ZZTEST",
+      "alohaQwerty": false,
+      "alohaSecurityLevel": "0",
+      "alohaTermCode": "0",
+      "doNotImportTimeClockPunches": false,
+      "posCode": "106"
+    },
+    "ssn": "",
+    "status": {
+      "employmentReason": "NewHire",
+      "employmentStatus": "active",
+      "exempt": false,
+      "fullTime": true,
+      "inactiveDate": null,
+      "lastDay": "1899-01-01T00:00:00Z",
+      "rehire": false,
+      "rehireDate": "1899-01-01T00:00:00Z",
+      "returnDay": "1899-01-01T00:00:00Z",
+      "salaried": false,
+      "terminationDate": null,
+      "terminationExplanation": "",
+      "transferStore": 0
+    }
+  },
+  "payRateRow": {
+    "firstName": "ZZTEST",
+    "lastName": "HUBCONNECTOR",
+    "jobCode": 1,
+    "payRate": 16.5,
+    "posProvider_EmployeeUID": "HUBTESTHESWX",
+    "payrollProvider_EmployeeUID": "999055957",
+    "locationNumber": 6000,
+    "insertDate": "2026-11-16T22:04:45.3233333",
+    "updateDate": "2026-11-16T22:05:07.55"
+  },
+  "jobCodes": [
+    {
+      "jobCode": 1,
+      "jobCodeDescription": "Crew"
+    },
+    {
+      "jobCode": 2,
+      "jobCodeDescription": "Crew U"
+    },
+    {
+      "jobCode": 3,
+      "jobCodeDescription": "Crew Stude"
+    },
+    {
+      "jobCode": 4,
+      "jobCodeDescription": "DT"
+    },
+    {
+      "jobCode": 5,
+      "jobCodeDescription": "Team Train"
+    },
+    {
+      "jobCode": 7,
+      "jobCodeDescription": "ATO_IE"
+    },
+    {
+      "jobCode": 8,
+      "jobCodeDescription": "IE_TRAIN"
+    },
+    {
+      "jobCode": 9,
+      "jobCodeDescription": "Pt-Crew"
+    },
+    {
+      "jobCode": 10,
+      "jobCodeDescription": "Self-Order"
+    },
+    {
+      "jobCode": 25,
+      "jobCodeDescription": "Training"
+    },
+    {
+      "jobCode": 26,
+      "jobCodeDescription": "DT Single"
+    },
+    {
+      "jobCode": 27,
+      "jobCodeDescription": "FC Single"
+    },
+    {
+      "jobCode": 28,
+      "jobCodeDescription": "YL Single"
+    },
+    {
+      "jobCode": 30,
+      "jobCodeDescription": "Traffic"
+    },
+    {
+      "jobCode": 200,
+      "jobCodeDescription": "Shift Sup"
+    },
+    {
+      "jobCode": 201,
+      "jobCodeDescription": "Pt Shift S"
+    },
+    {
+      "jobCode": 202,
+      "jobCodeDescription": "Shift S Tr"
+    },
+    {
+      "jobCode": 203,
+      "jobCodeDescription": "Pt-Shift M"
+    },
+    {
+      "jobCode": 205,
+      "jobCodeDescription": "SM"
+    },
+    {
+      "jobCode": 210,
+      "jobCodeDescription": "Kitchen"
+    },
+    {
+      "jobCode": 212,
+      "jobCodeDescription": "SMIT"
+    },
+    {
+      "jobCode": 215,
+      "jobCodeDescription": "SMPT"
+    },
+    {
+      "jobCode": 500,
+      "jobCodeDescription": "Main Tec"
+    },
+    {
+      "jobCode": 535,
+      "jobCodeDescription": "Sr Mn Tec"
+    },
+    {
+      "jobCode": 600,
+      "jobCodeDescription": "Asst Mgr T"
+    },
+    {
+      "jobCode": 609,
+      "jobCodeDescription": "Rest. Mgr"
+    },
+    {
+      "jobCode": 610,
+      "jobCodeDescription": "Asst Mgr"
+    },
+    {
+      "jobCode": 614,
+      "jobCodeDescription": "Co-Mgr Tr"
+    },
+    {
+      "jobCode": 615,
+      "jobCodeDescription": "Co-Mgr Tr"
+    },
+    {
+      "jobCode": 619,
+      "jobCodeDescription": "Co-Manager"
+    },
+    {
+      "jobCode": 620,
+      "jobCodeDescription": "Co-Manager"
+    },
+    {
+      "jobCode": 625,
+      "jobCodeDescription": "Ast. GM"
+    },
+    {
+      "jobCode": 629,
+      "jobCodeDescription": "Act GM (H)"
+    },
+    {
+      "jobCode": 630,
+      "jobCodeDescription": "Acting GM"
+    },
+    {
+      "jobCode": 649,
+      "jobCodeDescription": "Gen Mg (H)"
+    },
+    {
+      "jobCode": 650,
+      "jobCodeDescription": "General Mg"
+    },
+    {
+      "jobCode": 652,
+      "jobCodeDescription": "DV-Train"
+    },
+    {
+      "jobCode": 655,
+      "jobCodeDescription": "GM Tollway"
+    },
+    {
+      "jobCode": 659,
+      "jobCodeDescription": "TS Mgr (H)"
+    },
+    {
+      "jobCode": 660,
+      "jobCodeDescription": "T S Mgr"
+    },
+    {
+      "jobCode": 670,
+      "jobCodeDescription": "AGMIT"
+    },
+    {
+      "jobCode": 699,
+      "jobCodeDescription": "General Mg"
+    },
+    {
+      "jobCode": 1000,
+      "jobCodeDescription": "Dist Mgr"
+    },
+    {
+      "jobCode": 1002,
+      "jobCodeDescription": "DM in Trn"
+    },
+    {
+      "jobCode": 9781,
+      "jobCodeDescription": "Area Ops D"
+    },
+    {
+      "jobCode": 50000,
+      "jobCodeDescription": "STAGING"
+    },
+    {
+      "jobCode": 50001,
+      "jobCodeDescription": "Online Int"
+    },
+    {
+      "jobCode": 50002,
+      "jobCodeDescription": "OrderTaker"
+    },
+    {
+      "jobCode": 50003,
+      "jobCodeDescription": "Pin Pad"
+    }
+  ],
+  "termCodes": [
+    {
+      "terminationCode": 1,
+      "terminationCodeDescription": "Termination"
+    },
+    {
+      "terminationCode": 2,
+      "terminationCodeDescription": "No Show"
+    },
+    {
+      "terminationCode": 3,
+      "terminationCodeDescription": "Deactivate"
+    },
+    {
+      "terminationCode": 4,
+      "terminationCodeDescription": "Shift Manager"
+    },
+    {
+      "terminationCode": 20,
+      "terminationCodeDescription": "Voluntary Quit"
+    },
+    {
+      "terminationCode": 21,
+      "terminationCodeDescription": "Quit No Notice"
+    },
+    {
+      "terminationCode": 22,
+      "terminationCodeDescription": "Job Performance"
+    },
+    {
+      "terminationCode": 23,
+      "terminationCodeDescription": "Excessive Tardiness"
+    },
+    {
+      "terminationCode": 24,
+      "terminationCodeDescription": "Excessive Absenteeism"
+    },
+    {
+      "terminationCode": 25,
+      "terminationCodeDescription": "No Show/ No Call"
+    },
+    {
+      "terminationCode": 26,
+      "terminationCodeDescription": "Moving"
+    },
+    {
+      "terminationCode": 27,
+      "terminationCodeDescription": "Other Job"
+    },
+    {
+      "terminationCode": 28,
+      "terminationCodeDescription": "Back to School"
+    },
+    {
+      "terminationCode": 29,
+      "terminationCodeDescription": "Rude or Discourteous Behaviour"
+    },
+    {
+      "terminationCode": 30,
+      "terminationCodeDescription": "Insubordination"
+    },
+    {
+      "terminationCode": 100,
+      "terminationCodeDescription": "Transfer"
+    }
+  ],
+  "errors": {
+    "rawAlreadyExists": "\"{\\\"errorCode\\\":2500,\\\"errorMessage\\\":\\\"AddEmployee failed. The employee already exists.\\\"}\"",
+    "alreadyExists": "AddEmployee failed. The employee already exists.",
+    "alreadyActive": "RehireEmployee failed. The employee is already active in the location to which you are trying to rehire them.",
+    "termCodeInvalid": "TerminateEmployee failed. EmployeeTerminationCode is invalid.",
+    "jobCodeInvalid": "AddJob failed. Not all JobCodes are valid.",
+    "noLocationAccess": "Request failed. You do not have access to the location number(s) in your request."
+  },
+  "statuses": {
+    "PUT /Employee/modifyJob": 204,
+    "PUT /Employee/addJob": 204,
+    "PUT /Employee/removeJob": 204,
+    "PUT /Employee/updateEmployeeInfo": 204,
+    "POST /Employee/transferEmployee": 200,
+    "PUT /Employee/terminateEmployee": 204,
+    "POST /Employee/rehireEmployee": 200
+  },
+  "noProfile": {
+    "GET /Employee/getEmployee": {
+      "status": 200,
+      "body": "[]"
+    },
+    "GET /Employee/getEmployeeByName": {
+      "status": 200,
+      "body": "[]"
+    },
+    "POST /PayRate": {
+      "status": 204,
+      "body": ""
+    }
+  }
+}

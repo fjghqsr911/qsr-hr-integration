@@ -1,13 +1,14 @@
 import { sql } from "./sql";
 import {
   ClaimedDelivery, CodeMaps, CodeType, DeliveryContext, DeliveryStore, EmploymentContext, EventContext, PendingCreate,
-  QueueStats, codeKey, pickEmployment
+  QueueStats, XrefIds, codeKey, pickEmployment
 } from "./delivery";
 
 /*
   DeliveryStore backed by sqldb-hrint: out.deliveries / out.last_sent / out.shadow_payloads / xref.employees,
   read from rpt.workforce_events, stage.employment_current, ref.destination_codes, ref.store_modes.
-  Runs are locked through stage.sync_runs with run_type 'delivery' (same pattern as the sync).
+  Runs are locked through stage.sync_runs per destination: run_type 'delivery:<destination>' (same pattern as the sync), so
+  one destination's run never blocks another's. A legacy 'delivery' row still running blocks every destination.
   Nothing here logs or stores names, SIN, dates of birth or pay: the runner hands over already-masked payloads.
 */
 
@@ -44,7 +45,7 @@ FROM rpt.workforce_events e WHERE e.event_key = @eventKey;
 SELECT employee_id, company_id, employee_number, is_home_company, employee_status, original_hire_date, last_hire_date, termination_date,
        org_level2, job_code, full_or_part_time, first_name, preferred_name, last_name
 FROM stage.employment_current WHERE employee_id = @employeeId;
-SELECT external_id, source FROM xref.employees WHERE destination = @destination AND employee_id = @employeeId;
+SELECT external_id, source, payroll_id, pos_id FROM xref.employees WHERE destination = @destination AND employee_id = @employeeId;
 SELECT mode FROM ref.store_modes WHERE destination = @destination AND store = @store;
 SELECT operation, payload_hash FROM [out].last_sent WHERE destination = @destination AND employee_id = @employeeId;`;
 
@@ -71,8 +72,10 @@ ORDER BY d.finished_utc;`;
 export const XREF_UPSERT_SQL = `
 MERGE xref.employees WITH (HOLDLOCK) AS t
 USING (SELECT @destination AS destination, @employeeId AS employee_id) AS s ON t.destination = s.destination AND t.employee_id = s.employee_id
-WHEN MATCHED THEN UPDATE SET external_id = @externalId, source = @source, updated_utc = SYSUTCDATETIME()
-WHEN NOT MATCHED THEN INSERT (destination, employee_id, external_id, source) VALUES (@destination, @employeeId, @externalId, @source);`;
+WHEN MATCHED THEN UPDATE SET external_id = @externalId, source = @source,
+     payroll_id = COALESCE(@payrollId, t.payroll_id), pos_id = COALESCE(@posId, t.pos_id), updated_utc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT (destination, employee_id, external_id, source, payroll_id, pos_id)
+     VALUES (@destination, @employeeId, @externalId, @source, @payrollId, @posId);`;
 
 export const LAST_SENT_UPSERT_SQL = `
 MERGE [out].last_sent WITH (HOLDLOCK) AS t
@@ -134,17 +137,20 @@ export class SqlDeliveryStore implements DeliveryStore {
   private codes: CodeMaps | null = null;              // ref.destination_codes, read once per run
   constructor(private pool: sql.ConnectionPool, private destination: string) {}
 
+  /** stage.sync_runs.run_type for this destination's runs (varchar(20)): 'delivery:clearview', 'delivery:rosnet'. */
+  private get runType() { return `delivery:${this.destination}`; }
+
   async isRunning(): Promise<boolean> {
-    const r = await this.pool.request().query(`
+    const r = await this.pool.request().input("rt", sql.VarChar(20), this.runType).query(`
       SELECT COUNT(*) AS n FROM stage.sync_runs
-      WHERE run_type = 'delivery' AND status = 'running' AND started_utc > DATEADD(minute, -30, SYSUTCDATETIME())`);
+      WHERE run_type IN ('delivery', @rt) AND status = 'running' AND started_utc > DATEADD(minute, -30, SYSUTCDATETIME())`);
     return Number(r.recordset[0]?.n ?? 0) > 0;
   }
 
   async startRun(): Promise<string> {
-    const r = await this.pool.request().query(`DECLARE @id uniqueidentifier = NEWID();
+    const r = await this.pool.request().input("rt", sql.VarChar(20), this.runType).query(`DECLARE @id uniqueidentifier = NEWID();
       INSERT INTO stage.sync_runs (run_id, run_type, started_utc, window_start_utc, window_end_utc, status)
-      VALUES (@id, 'delivery', SYSUTCDATETIME(), NULL, SYSUTCDATETIME(), 'running');
+      VALUES (@id, @rt, SYSUTCDATETIME(), NULL, SYSUTCDATETIME(), 'running');
       SELECT @id AS run_id;`);
     return r.recordset[0].run_id;
   }
@@ -182,7 +188,7 @@ export class SqlDeliveryStore implements DeliveryStore {
     const mode = String(modes?.[0]?.mode ?? "off").toLowerCase();
     return {
       delivery: d, event, employment: pickEmployment((employment ?? []).map(mapEmploymentRow), event),
-      xref: xrefs?.[0] ? { externalId: String(xrefs[0].external_id), source: String(xrefs[0].source) } : null,
+      xref: xrefs?.[0] ? { externalId: String(xrefs[0].external_id), source: String(xrefs[0].source), payrollId: nz(xrefs[0].payroll_id), posId: nz(xrefs[0].pos_id) } : null,
       codes, storeMode: mode === "live" || mode === "shadow" ? mode : "off", lastSent: lastSentMap
     };
   }
@@ -250,9 +256,11 @@ export class SqlDeliveryStore implements DeliveryStore {
       .query(`UPDATE [out].deliveries SET status = 'review', last_error = @err WHERE delivery_id = @id`);
   }
 
-  async upsertXref(destination: string, employeeId: string, externalId: string, source: "created" | "matched"): Promise<void> {
+  /** A null payroll / POS id never erases one already stored (COALESCE in the MERGE). */
+  async upsertXref(destination: string, employeeId: string, externalId: string, source: "created" | "matched", ids?: XrefIds): Promise<void> {
     await this.pool.request().input("destination", sql.VarChar(20), destination).input("employeeId", sql.VarChar(20), employeeId)
-      .input("externalId", sql.NVarChar(64), externalId).input("source", sql.VarChar(20), source).query(XREF_UPSERT_SQL);
+      .input("externalId", sql.NVarChar(64), externalId).input("source", sql.VarChar(20), source)
+      .input("payrollId", sql.VarChar(20), ids?.payrollId ?? null).input("posId", sql.VarChar(40), ids?.posId ?? null).query(XREF_UPSERT_SQL);
   }
 
   async pendingCreates(destination: string): Promise<PendingCreate[]> {
@@ -311,14 +319,18 @@ export class SqlDeliveryStore implements DeliveryStore {
     return (r.recordset ?? []).map((x: any) => ({ employeeId: x.employee_id, companyId: x.company_id, employeeNumber: nz(x.employee_number), lastName: nz(x.last_name) }));
   }
 
-  async upsertXrefMany(rows: { employeeId: string; externalId: string; source: "extract" | "created" | "matched" }[]): Promise<void> {
+  async upsertXrefMany(rows: ({ employeeId: string; externalId: string; source: "extract" | "created" | "matched" } & XrefIds)[]): Promise<void> {
     if (!rows.length) return;
     await this.pool.request().input("destination", sql.VarChar(20), this.destination).input("rows", sql.NVarChar(sql.MAX), JSON.stringify(rows)).query(`
       MERGE xref.employees WITH (HOLDLOCK) AS t
-      USING (SELECT @destination AS destination, employeeId AS employee_id, externalId AS external_id, source
-             FROM OPENJSON(@rows) WITH (employeeId varchar(20), externalId nvarchar(64), source varchar(20))) AS s
+      USING (SELECT @destination AS destination, employeeId AS employee_id, externalId AS external_id, source, payrollId AS payroll_id, posId AS pos_id
+             FROM OPENJSON(@rows) WITH (employeeId varchar(20), externalId nvarchar(64), source varchar(20), payrollId varchar(20), posId varchar(40))) AS s
          ON t.destination = s.destination AND t.employee_id = s.employee_id
-      WHEN MATCHED AND t.external_id <> s.external_id THEN UPDATE SET external_id = s.external_id, source = s.source, updated_utc = SYSUTCDATETIME()
-      WHEN NOT MATCHED THEN INSERT (destination, employee_id, external_id, source) VALUES (s.destination, s.employee_id, s.external_id, s.source);`);
+      WHEN MATCHED AND (t.external_id <> s.external_id OR (s.payroll_id IS NOT NULL AND ISNULL(t.payroll_id, '') <> s.payroll_id)
+                        OR (s.pos_id IS NOT NULL AND ISNULL(t.pos_id, '') <> s.pos_id))
+        THEN UPDATE SET external_id = s.external_id, source = s.source, payroll_id = COALESCE(s.payroll_id, t.payroll_id),
+                        pos_id = COALESCE(s.pos_id, t.pos_id), updated_utc = SYSUTCDATETIME()
+      WHEN NOT MATCHED THEN INSERT (destination, employee_id, external_id, source, payroll_id, pos_id)
+        VALUES (s.destination, s.employee_id, s.external_id, s.source, s.payroll_id, s.pos_id);`);
   }
 }

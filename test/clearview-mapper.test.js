@@ -85,6 +85,12 @@ module.exports = async () => {
     eq(redactForStore({ emailAddress: "a@b.c", personalEmail: "x@y.z", Email: "q@r.s", nested: [{ email: "n@n.n" }] }), { emailAddress: EMAIL_MASK, personalEmail: EMAIL_MASK, Email: EMAIL_MASK, nested: [{ email: EMAIL_MASK }] });
     const otherEmail = plan(ctxFrom(f), { ...f.sensitive, email: "other@example.org" }).plan.payload;
     assert(hashPayload(p.payload).equals(hashPayload(otherEmail)), "email must not affect the hash");
+    // shared masking (src/shared/masking.ts) also knows the Rosnet field names; null stays null (an unsent SIN is not a masked SIN)
+    const masking = require(path.join(DIST, "shared", "masking.js"));
+    eq(masking.redactForStore({ ssn: SIN, dob: `${FAKE_YEAR}-07-14T00:00:00`, emailId: "a@b.c", jobInfo: [{ jobCode: 1, payRate: 17.5 }] }),
+       { ssn: SIN_MASK, dob: DOB_MASK, emailId: EMAIL_MASK, jobInfo: [{ jobCode: 1, payRate: PAY_MASK }] });
+    eq(masking.redactForHash({ ssn: null, dob: `${FAKE_YEAR}-07-14T00:00:00`, jobInfo: { payRate: 17.5 } }), { ssn: null, dob: DOB_MASK, jobInfo: { payRate: 17.5 } });
+    eq(masking.redactForHash, redactForHash, "clearview/mapper re-exports the shared functions");
   });
 
   await test("mapper: hash stable across key order, changes with pay, not with SIN or DOB", () => {

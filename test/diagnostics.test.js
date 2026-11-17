@@ -26,8 +26,13 @@ module.exports = async () => {
   const graphCalls = [];
   const realGraph = require(path.join(DIST, "shared", "graph.js"));
   stubModule("shared/graph.js", { ...realGraph, buildGraphClient: () => ({ async probeDirectory() { graphCalls.push("GET /users?$top=1"); if (graphFails) throw graphFails; return 42; } }) });
+  let rosnetCreds = { status: "missing", sandbox: false, callable: false, secretExpires: null };
+  let rosnetFails = null;
+  const rosnetCalls = [];
   stubModule("shared/connectors.js", {
     clearviewCredentials: () => creds,
+    rosnetCredentials: () => rosnetCreds,
+    buildRosnetClient: () => ({ async locations() { rosnetCalls.push("GET /Location"); if (rosnetFails) throw rosnetFails; return { clientCode: "QUICKWEN", locationNumbers: [6000, 6010] }; } }),
     buildClearviewClient: () => ({
       companies: () => Object.entries(creds.companies).filter(([, ok]) => ok).map(([c]) => c),
       async get(company, p, q) { clearviewCalls.push(`${company} GET ${p}`); if (clearviewFails) throw clearviewFails; return { organizationId: 18, stores: [] }; }
@@ -86,16 +91,16 @@ module.exports = async () => {
       assert(typeof b.checkedUtc === "string" && !Number.isNaN(Date.parse(b.checkedUtc)), "checkedUtc");
       eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "entra", "grants", "settings", "sql", "sync", "ukg"]);
       eq(COMPONENTS.map(c => b[c].status), COMPONENTS.map(() => "pass"));
-      eq(b.destinations.length, 1); eq(b.destinations[0].name, "clearview");
+      eq(b.destinations.map(d => d.name), ["clearview", "rosnet"]);
       eq(b.caller, { status: "pass", kind: "delegated", clientAppId: "monitor-app", clientAllowed: true });
       eq(b.sync, { status: "pass", enabled: true });
       eq(b.audit.ms, 7);
       assert(typeof b.sql.ms === "number" && typeof b.ukg.ms === "number", "sql / ukg carry ms");
       assert(!("missing" in b.settings) && !("unresolved" in b.settings) && !("missing" in b.grants), "readers never see setting / grant names");
-      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, CODES_COUNT_SQL, ENTRA_GRANTS_SQL].sort(), "entra not provisioned: its counts are not queried");
+      eq(pool.calls.map(c => c.text).sort(), ["SELECT 1 AS ok;", GRANTS_SQL, STATS_SQL, STATS_SQL, CODES_COUNT_SQL, CODES_COUNT_SQL, ENTRA_GRANTS_SQL].sort(), "queue and codes once per destination; entra not provisioned: its counts are not queried");
       assert(pool.calls.every(c => /^SELECT/i.test(c.text.trim())), "read-only SQL");
       eq(auditWrites, 0, "diagnostics never writes an audit record");
-      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
+      eq(logs.length, 1); assert(/^\[diagnostics\] by=delegated:reader@qsrgroup.ca ok=7 fail=0 clearview=warn rosnet=warn entra=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: admin caller gets missing / unresolved arrays (empty when all is well)", async () => {
@@ -140,7 +145,7 @@ module.exports = async () => {
       const res = await hubDiagnostics(req(reader), ctx);
       eq(res.status, 200); eq(res.jsonBody.audit, { status: "fail", detail: "table unreachable" });
       eq(res.jsonBody.sql.status, "pass"); eq(auditWrites, 0);
-      assert(/ok=6 fail=1 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=1 clearview=warn rosnet=warn entra=warn$/.test(logs[0]), logs[0]);
     });
 
     await test("diagnostics: SQL down -> sql and grants fail, pool reset, other components unaffected, 200", async () => {
@@ -169,11 +174,37 @@ module.exports = async () => {
       reset(); process.env.HUB_SYNC_ENABLED = "false";
       const b = (await hubDiagnostics(req(reader), ctx)).jsonBody;
       eq(b.sync.status, "warn"); eq(b.sync.enabled, false);
-      assert(/ok=6 fail=0 clearview=warn entra=warn$/.test(logs[0]), logs[0]);
+      assert(/ok=6 fail=0 clearview=warn rosnet=warn entra=warn$/.test(logs[0]), logs[0]);
       reset(); process.env.ALLOWED_CLIENT_IDS = "other-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.detail, "client_app_not_allowed");
       process.env.ALLOWED_CLIENT_IDS = "other-app, monitor-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.caller.clientAllowed, true);
+    });
+    await test("diagnostics: destinations[1] rosnet: no credentials -> not called, warn; credentials -> timed GET /Location; sandbox host in Azure is never called; expiry warning", async () => {
+      reset(); rosnetCalls.length = 0; rosnetFails = null;
+      rosnetCreds = { status: "missing", sandbox: false, callable: false, secretExpires: null };
+      let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq(Object.keys(d).sort(), ["api", "authMode", "codes", "credentials", "detail", "enabled", "live", "name", "queue", "sandbox", "secretExpiresUtc", "status"]);
+      eq([d.name, d.status, d.credentials, d.api, rosnetCalls.length], ["rosnet", "warn", "missing", { status: "skipped" }, 0]);
+      assert(/no Rosnet settings \(ROSNET_BASE_URL/.test(d.detail) && /ROSNET_ENABLED is not "true"/.test(d.detail), d.detail);
+      eq(d.queue, { pending: 3, waiting: 1, failed: 0, dead: 2, oldestPendingMinutes: 95 });
+
+      reset(); process.env.ROSNET_ENABLED = "true";
+      rosnetCreds = { status: "present", sandbox: false, callable: true, secretExpires: null };
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq([d.status, d.api.status, d.api.clientCode, d.api.locations, rosnetCalls], ["pass", "pass", "QUICKWEN", 2, ["GET /Location"]]);
+
+      reset(); rosnetFails = new Error("Rosnet 401 on GET /Location");
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq([d.status, d.api.status, d.api.detail], ["fail", "fail", "Rosnet 401 on GET /Location"]);
+
+      reset(); rosnetFails = null; rosnetCalls.length = 0;
+      rosnetCreds = { status: "present", sandbox: true, callable: false, secretExpires: new Date(Date.now() + 20 * 86_400_000).toISOString() };
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq([d.status, d.sandbox, d.api.status, rosnetCalls.length], ["warn", true, "skipped", 0]);
+      assert(/point at the sandbox/.test(d.detail) && /expires in (19|20) day/.test(d.detail), d.detail);
+      delete process.env.ROSNET_ENABLED;
+      rosnetCreds = { status: "missing", sandbox: false, callable: false, secretExpires: null };
     });
     await test("diagnostics: destinations[0] clearview without credentials -> api skipped, credentials missing, warn; queue and codes from SQL; no Clearview call", async () => {
       reset();
