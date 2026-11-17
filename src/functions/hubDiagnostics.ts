@@ -236,7 +236,10 @@ export async function checkRosnet(now: Date = new Date()): Promise<Component & {
       if (loc.clientCode && loc.clientCode.toUpperCase() !== config.rosnetClientCode.toUpperCase()) notes.push(`Rosnet client code is ${loc.clientCode}, ROSNET_CLIENT_CODE is ${config.rosnetClientCode}`);
     } catch (e: any) { api = { status: "fail", ms: Date.now() - started, detail: errText(e) }; }
   }
-  if (creds.status === "missing") notes.push("no Rosnet settings (ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID, ROSNET_CLIENT_SECRET): Rosnet not called, live stores run as shadow");
+  // no credentials while live sending is off is the intended state before go-live (shadow payloads need none): not a warning
+  const awaitingCredentials = creds.status === "missing" && !live;
+  if (awaitingCredentials) notes.push("shadow only: no Rosnet credentials set, so Rosnet is never called (expected until Rosnet issues production credentials)");
+  else if (creds.status === "missing") notes.push("ROSNET_LIVE_ENABLED is true but there are no Rosnet credentials (ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID, ROSNET_CLIENT_SECRET): Rosnet not called, live stores run as shadow");
   if (creds.status === "partial") notes.push("some of ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID, ROSNET_CLIENT_SECRET are missing or unresolved: Rosnet not called, live stores run as shadow");
   if (creds.status === "present" && !creds.callable) notes.push("the Rosnet settings point at the sandbox: not called from Azure, live stores run as shadow");
   if (!enabled) notes.push("ROSNET_ENABLED is not \"true\": timer and after-sync runs are off");
@@ -259,9 +262,26 @@ export async function checkRosnet(now: Date = new Date()): Promise<Component & {
     sqlError = errText(e);
   }
 
-  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (creds.status !== "present" || !creds.callable || !enabled || secretWarn || codes.store === 0 || codes.job === 0) ? "warn" : "pass";
+  const noCodes = codes.store === 0 || codes.job === 0;
+  const credentialsOk = awaitingCredentials || (creds.status === "present" && creds.callable);
+  const status: ComponentStatus = api.status === "fail" || sqlError ? "fail" : (!credentialsOk || !enabled || secretWarn || noCodes) ? "warn" : "pass";
+  // the monitor shows this text in place of its own summary: keep the queue and the code counts visible in the awaiting state
+  if (status === "pass" && awaitingCredentials && queue)
+    notes.push(`queue: ${queue.pending} pending, ${queue.waiting} waiting, ${queue.failed} failed, ${queue.dead} dead`, `codes: ${codes.store} stores, ${codes.job} jobs, ${codes.termination} termination reasons`);
   const detail = [sqlError ? `queue unavailable: ${sqlError}` : null, ...notes].filter(Boolean).join("; ");
-  return { name: "rosnet", status, enabled, live, authMode: "oauth", credentials: creds.status, sandbox: creds.sandbox, secretExpiresUtc, api, queue, codes, ...(detail ? { detail } : {}) };
+  // what to do about it, most actionable first (the monitor shows it as "Fix"; without it the monitor falls back to a Clearview text)
+  const production = "check them read-only with rosnet-smoke-test.ps1 -Environment Production, store the secret in kv-hrint-prod-cc as rosnet-client-secret, then set ROSNET_BASE_URL, ROSNET_TOKEN_URL, ROSNET_CLIENT_ID and ROSNET_CLIENT_SECRET (as a Key Vault reference) on func-hrint-prod-cc";
+  const notSandbox = "Never the sandbox credentials: this app sends real employee data and does not call a sandbox host.";
+  const hint =
+    sqlError ? "The Function App identity cannot read the delivery tables in sqldb-hrint: see the SQL grants check." :
+    api.status === "fail" ? "Rosnet refused the read. A 401 means the client id or secret is wrong or expired; a Cloudflare challenge means Rosnet has to allow this app. See the Function App logs for [rosnet] lines." :
+    noCodes ? "Run provisioning/25-destination-codes-rosnet.sql (and 26-rosnet-events.sql) in the portal query editor." :
+    !enabled ? "Set ROSNET_ENABLED=true on func-hrint-prod-cc." :
+    creds.status === "present" && !creds.callable ? `Replace the sandbox settings with the production ones once Rosnet issues them: ${production}. ${notSandbox}` :
+    creds.status !== "present" ? `${awaitingCredentials ? "Nothing to do until Rosnet issues production credentials. Then" : "Set ROSNET_LIVE_ENABLED=false, or add the production credentials:"} ${production}. ${notSandbox}` :
+    secretWarn ? "Ask Rosnet for a new client secret, store it in kv-hrint-prod-cc as rosnet-client-secret and update ROSNET_SECRET_EXPIRES." : null;
+  return { name: "rosnet", status, enabled, live, authMode: "oauth", credentials: creds.status, sandbox: creds.sandbox, secretExpiresUtc, api, queue, codes,
+           ...(detail ? { detail } : {}), ...(hint ? { hint } : {}) };
 }
 
 export async function checkEntra(admin: boolean = false, now: Date = new Date()): Promise<Component> {

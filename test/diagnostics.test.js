@@ -180,14 +180,27 @@ module.exports = async () => {
       process.env.ALLOWED_CLIENT_IDS = "other-app, monitor-app";
       eq((await hubDiagnostics(req(reader), ctx)).jsonBody.caller.clientAllowed, true);
     });
-    await test("diagnostics: destinations[1] rosnet: no credentials -> not called, warn; credentials -> timed GET /Location; sandbox host in Azure is never called; expiry warning", async () => {
+    await test("diagnostics: destinations[1] rosnet: no credentials -> not called (pass while live sending is off, with its own hint); credentials -> timed GET /Location; sandbox host in Azure is never called; expiry warning", async () => {
       reset(); rosnetCalls.length = 0; rosnetFails = null;
       rosnetCreds = { status: "missing", sandbox: false, callable: false, secretExpires: null };
       let d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
-      eq(Object.keys(d).sort(), ["api", "authMode", "codes", "credentials", "detail", "enabled", "live", "name", "queue", "sandbox", "secretExpiresUtc", "status"]);
+      eq(Object.keys(d).sort(), ["api", "authMode", "codes", "credentials", "detail", "enabled", "hint", "live", "name", "queue", "sandbox", "secretExpiresUtc", "status"]);
       eq([d.name, d.status, d.credentials, d.api, rosnetCalls.length], ["rosnet", "warn", "missing", { status: "skipped" }, 0]);
-      assert(/no Rosnet settings \(ROSNET_BASE_URL/.test(d.detail) && /ROSNET_ENABLED is not "true"/.test(d.detail), d.detail);
+      assert(/no Rosnet credentials set/.test(d.detail) && /ROSNET_ENABLED is not "true"/.test(d.detail), d.detail);
+      eq(d.hint, "Set ROSNET_ENABLED=true on func-hrint-prod-cc.");
       eq(d.queue, { pending: 3, waiting: 1, failed: 0, dead: 2, oldestPendingMinutes: 95 });
+
+      // as deployed for the shadow phase: connector on, live sending off, no credentials = the intended state, not a warning
+      reset(); process.env.ROSNET_ENABLED = "true";
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq([d.status, d.credentials, d.api, rosnetCalls.length], ["pass", "missing", { status: "skipped" }, 0]);
+      assert(/^shadow only: no Rosnet credentials set.*expected until Rosnet issues production credentials\); queue: 3 pending, 1 waiting, 0 failed, 2 dead; codes: \d+ stores, \d+ jobs, \d+ termination reasons$/.test(d.detail), d.detail);
+      assert(/^Nothing to do until Rosnet issues production credentials/.test(d.hint) && /ROSNET_CLIENT_SECRET/.test(d.hint) && /Never the sandbox credentials/.test(d.hint) && !/CLEARVIEW/i.test(d.hint), d.hint);
+      process.env.ROSNET_LIVE_ENABLED = "true";                                             // live switched on without credentials: that is a warning
+      d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
+      eq(d.status, "warn");
+      assert(/ROSNET_LIVE_ENABLED is true but there are no Rosnet credentials/.test(d.detail) && /^Set ROSNET_LIVE_ENABLED=false, or add the production credentials/.test(d.hint), d.detail);
+      delete process.env.ROSNET_LIVE_ENABLED;
 
       reset(); process.env.ROSNET_ENABLED = "true";
       rosnetCreds = { status: "present", sandbox: false, callable: true, secretExpires: null };
@@ -203,6 +216,7 @@ module.exports = async () => {
       d = (await hubDiagnostics(req(reader), ctx)).jsonBody.destinations[1];
       eq([d.status, d.sandbox, d.api.status, rosnetCalls.length], ["warn", true, "skipped", 0]);
       assert(/point at the sandbox/.test(d.detail) && /expires in (19|20) day/.test(d.detail), d.detail);
+      assert(/^Replace the sandbox settings with the production ones/.test(d.hint), d.hint);
       delete process.env.ROSNET_ENABLED;
       rosnetCreds = { status: "missing", sandbox: false, callable: false, secretExpires: null };
     });
