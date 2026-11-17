@@ -6,7 +6,8 @@ import { runConnector, runDiscovery } from "../shared/connectors";
 
 // Clearview connector: drains out.deliveries for destination 'clearview'.
 //
-//   timer       every 15 minutes (CLEARVIEW_ENABLED = true), plus after every successful / partial intraday sync
+//   timer       hourly at :30 (CLEARVIEW_ENABLED = true): retries, waiting deliveries, manual retries / queued events.
+//               New events never wait for it: the connector also runs after every succeeded / partial intraday sync and nightly
 //   GET|POST    /api/hub/clearview/run                       run now (always allowed, even with the timer off)
 //   POST        /api/hub/clearview/discover?what=codes       stores / jobs / termination reasons from Clearview -> report + ref.destination_codes
 //   POST        /api/hub/clearview/discover?what=employees   seed xref.employees from Clearview's employee list
@@ -20,7 +21,7 @@ const NO_STORE = { "Cache-Control": "no-store", "Pragma": "no-cache" };
 const errText = (e: any) => String(e?.message ?? "error").replace(/\?.*$/, "").slice(0, 200);
 
 app.timer("clearviewConnectorTimer", {
-  schedule: "0 */15 * * * *",
+  schedule: "0 30 * * * *",             // :30 keeps clear of the syncs at :05 (intraday) and :15 (nightly), each of which runs the connector itself
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.clearviewEnabled) { ctx.log("[clearview] disabled (CLEARVIEW_ENABLED is not 'true') - skipping"); return; }
     await runConnector("clearview", ctx, "timer");

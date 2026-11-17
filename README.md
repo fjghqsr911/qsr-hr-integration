@@ -58,7 +58,7 @@ user endpoints.
 |---|---|---|
 | `hubSyncTimer` | Timer, 10:05 / 14:05 / 18:05 / 22:05 **UTC** (6/10/14/18 ET in summer, one hour earlier in winter) | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
-| `clearviewConnectorTimer` | Timer, every 15 minutes | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. Also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) when enabled |
+| `clearviewConnectorTimer` | Timer, hourly at :30 | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. The timer is for retries, waiting deliveries and manual retries / queued events; new events do not wait for it, because the connector also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) and nightly (`hubNightlyTimer` / `hubNightlyRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |
 | `entraSyncTimer` | Timer, 06:45 **UTC** daily (after the nightly) | Snapshots Entra users and groups, links them to employees and turns UKG differences into **proposals** (see [Entra sync](#entra-sync)). Does nothing unless `ENTRA_SYNC_ENABLED` = `true`. Also runs right after every succeeded / partial intraday sync when enabled. Never writes to Entra |
 | `entraSyncRun` | `POST /api/hub/entra/sync` | Same run on demand; always allowed. Role `Entra.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`; audited |
@@ -132,7 +132,7 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `CLEARVIEW_CLIENT_ID_SWN6T`, `CLEARVIEW_CLIENT_SECRET_SWN6T`, `CLEARVIEW_CLIENT_ID_SWNGK`, `CLEARVIEW_CLIENT_SECRET_SWNGK` | OAuth mode: client id and secret per UKG company (one Clearview organization each). Secrets expire after 24 months | secrets as Key Vault references. Unset, blank or an unresolved reference (`@Microsoft.KeyVault(` still literal) = missing: that company runs as shadow, nothing is sent |
 | `CLEARVIEW_SECRET_EXPIRES_SWN6T`, `CLEARVIEW_SECRET_EXPIRES_SWNGK` | Optional, set by hand from the Clearview page: when each OAuth secret expires (ISO date). Diagnostics warns 60 days ahead and once past | e.g. `2028-11-02` |
 | `CLEARVIEW_AUTH_KEY_SWN6T`, `CLEARVIEW_AUTH_KEY_SWNGK` | Key mode only: Clearview `authorizationKey` per UKG company | Key Vault references; same missing rule as above |
-| `CLEARVIEW_ENABLED` | Timer + after-sync runs, **and the only switch that lets any code path call Clearview** (billing starts at the first call). Off: manual `/api/hub/clearview/run` still works but every store runs as shadow, `discover` answers 409, the diagnostics probe is skipped | `false` until a deliberate first `discover` |
+| `CLEARVIEW_ENABLED` | Timer + after-sync / after-nightly runs, **and the only switch that lets any code path call Clearview** (billing starts at the first call). Off: manual `/api/hub/clearview/run` still works but every store runs as shadow, `discover` answers 409, the diagnostics probe is skipped | `false` until a deliberate first `discover` |
 | `CLEARVIEW_LIVE_ENABLED` | Kill switch: `false` = every store behaves as shadow, even stores set to `live` | `false` until the phase 5 pilot |
 | `CLEARVIEW_COMPANIES` | UKG companies sent to Clearview | default `SWN6T,SWNGK` (`M9WOJ` events become `review`, any other company `skipped`) |
 | `CLEARVIEW_EXCLUDED_JOBS` | UKG job codes never sent | default `MM` |
@@ -214,7 +214,7 @@ Phase 4 of the Flexspring replacement: `src/shared/delivery.ts` (generic runner 
 phase 6), `src/shared/deliveryStore.ts` (SQL), `src/shared/clearview/` (`client`, pure `mapper`, `connector`, `discover`),
 `src/shared/connectors.ts` (wiring) and `src/functions/clearviewConnector.ts` (timer + endpoints). Design: plan doc, "Phase 4".
 
-**Each run** (timer every 15 min, after each successful intraday sync, or `/api/hub/clearview/run`): lock via `stage.sync_runs`
+**Each run** (hourly timer, after each successful intraday sync or nightly, or `/api/hub/clearview/run`): lock via `stage.sync_runs`
 (`run_type = delivery`) → claim up to `CLEARVIEW_MAX_PER_RUN` due `pending` / `failed` / `waiting` rows, skipping employees that have a
 blocking row (`dead`, or `failed` / `waiting` not yet due), ordered per employee by effective date then
 create < job < store < pay < update < terminate → per delivery: re-read the store's mode (`off` → `skipped`), read what the action
@@ -234,7 +234,7 @@ on the way in `xref.employees`.
 **Statuses.** Besides the existing ones: `waiting` = the employee is not in Clearview yet (import not approved by Payroll, or an
 employee Flexspring never created); retried hourly without counting an attempt, alerted as `[delivery] waiting: …` after
 `CLEARVIEW_WAITING_ALERT_DAYS`. `skipped` = out of scope at send time (store off, company or job not sent, OPS). Transient failures
-(network, timeout, 429, 5xx) retry after 5 min, 30 min, 2 h, 12 h, then `dead` (`[delivery] dead: destination=clearview
+(network, timeout, 429, 5xx) retry after 5 min, 30 min, 2 h, 12 h (the earliest a retry is due; it is picked up by the next run, so with the hourly timer within the hour), then `dead` (`[delivery] dead: destination=clearview
 delivery_id=… employee=… attempts=5`); 400 / 422 and mapping or validation errors are `dead` at once with Clearview's message in
 `last_error` (never values); 401 / 403 abort the run and leave every row untouched. A failed, waiting or dead delivery holds that
 employee's later ones until it is retried or resolved (`POST /api/hub/deliveries/{id}/resolve` closes a `dead` one too). A claim

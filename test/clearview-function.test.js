@@ -10,6 +10,7 @@ module.exports = async () => {
   let connectorResult = () => ({ status: "succeeded", destination: "clearview", claimed: 2, sent: 0, shadow: 2, unchanged: 0, skipped: 0, review: 0, failed: 0, dead: 0, waiting: 0, resolved: 0, purged: 0 });
   const discoveries = [];
   let syncResult = { status: "succeeded", employeesInScope: 1 };
+  let nightlyResult = { status: "succeeded" };
   const realSql = require(path.join(DIST, "shared", "sql.js")).sql;
   // the real credential helpers, grabbed before connectors.js is stubbed for the endpoint tests
   const { companyCredential, clearviewCredentials, buildClearviewClient } = require(path.join(DIST, "shared", "connectors.js"));
@@ -19,10 +20,10 @@ module.exports = async () => {
     runConnector: async (destination, _ctx, trigger) => { connectorRuns.push(`${destination}:${trigger}`); const r = connectorResult(); if (r instanceof Error) throw r; return r; },
     runDiscovery: async (_ctx, what) => { discoveries.push(what); return { what, organizations: [], stores: { paired: 0, written: 0, unpairedHub: [], unpairedClearview: [] }, staleMappings: [] }; }
   });
-  stubModule("shared/hubSync.js", { runIntradaySync: async () => syncResult, runNightly: async () => ({ status: "succeeded" }) });
+  stubModule("shared/hubSync.js", { runIntradaySync: async () => syncResult, runNightly: async () => nightlyResult });
   stubModule("shared/hubStore.js", { SqlHubStore: class {} });
   delete require.cache[require.resolve(path.join(DIST, "functions", "hubSync.js"))];      // reload with the stubs above
-  const { runSyncThenDeliver } = require(path.join(DIST, "functions", "hubSync.js"));
+  const { runSyncThenDeliver, runNightlyThenDeliver } = require(path.join(DIST, "functions", "hubSync.js"));
   const { clearviewRun, clearviewDiscover } = require(path.join(DIST, "functions", "clearviewConnector.js"));
   const { config, presentValue, KEY_VAULT_PREFIX } = require(path.join(DIST, "shared", "config.js"));
 
@@ -111,6 +112,21 @@ module.exports = async () => {
     reset(); process.env.CLEARVIEW_ENABLED = "true"; connectorResult = () => new Error("boom?key=1");
     eq((await runSyncThenDeliver(ctx, "manual")).status, "succeeded");
     assert(logs.some(l => l === "ERROR [clearview] after-sync run error: boom"), logs.join("\n"));
+    connectorResult = () => ({ status: "succeeded" });
+  });
+
+  await test("after-nightly hook: runs the connector after a succeeded / partial nightly only when CLEARVIEW_ENABLED; connector errors never fail the nightly", async () => {
+    reset(); process.env.CLEARVIEW_ENABLED = "true"; nightlyResult = { status: "succeeded" };
+    eq((await runNightlyThenDeliver(ctx, "timer")).status, "succeeded"); eq(connectorRuns, ["clearview:after-nightly"]);
+    reset(); process.env.CLEARVIEW_ENABLED = "true"; nightlyResult = { status: "partial" };
+    await runNightlyThenDeliver(ctx, "manual"); eq(connectorRuns, ["clearview:after-nightly"]);
+    reset(); process.env.CLEARVIEW_ENABLED = "true"; nightlyResult = { status: "failed", message: "x" };
+    await runNightlyThenDeliver(ctx, "manual"); eq(connectorRuns, [], "no delivery after a failed nightly");
+    reset(); nightlyResult = { status: "succeeded" };
+    await runNightlyThenDeliver(ctx, "manual"); eq(connectorRuns, [], "CLEARVIEW_ENABLED unset -> no after-nightly run");
+    reset(); process.env.CLEARVIEW_ENABLED = "true"; connectorResult = () => new Error("boom?key=1");
+    eq((await runNightlyThenDeliver(ctx, "manual")).status, "succeeded");
+    assert(logs.some(l => l === "ERROR [clearview] after-nightly run error: boom"), logs.join("\n"));
     connectorResult = () => ({ status: "succeeded" });
   });
 

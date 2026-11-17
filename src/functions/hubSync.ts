@@ -95,12 +95,23 @@ async function runNightlyJob(ctx: InvocationContext, trigger: string): Promise<N
   }
 }
 
+/** Nightly, then drain the Clearview queue (CLEARVIEW_ENABLED): the nightly rebuilds events for employees the intraday sync
+ *  missed, and those should not wait for the hourly connector timer. A connector failure never fails the nightly. */
+export async function runNightlyThenDeliver(ctx: InvocationContext, trigger: string): Promise<NightlyResult> {
+  const result = await runNightlyJob(ctx, trigger);
+  if ((result.status === "succeeded" || result.status === "partial") && config.clearviewEnabled) {
+    try { await runConnector("clearview", ctx, "after-nightly"); }
+    catch (e: any) { ctx.error(`[clearview] after-nightly run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`); }
+  }
+  return result;
+}
+
 // 06:15 UTC = 2:15 AM Toronto in summer (EDT), 1:15 AM in winter (EST).
 app.timer("hubNightlyTimer", {
   schedule: "0 15 6 * * *",
   handler: async (_t: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-nightly] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
-    await runNightlyJob(ctx, "timer");
+    await runNightlyThenDeliver(ctx, "timer");
   }
 });
 
@@ -112,7 +123,7 @@ app.http("hubNightlyRun", {
     if (!auth.ok) return auth.response!;
     ctx.log(`[hub-nightly] manual run by ${describeCaller(auth.caller!)}`);
     try {
-      const result = await runNightlyJob(ctx, "manual");
+      const result = await runNightlyThenDeliver(ctx, "manual");
       return { status: result.status === "failed" ? 502 : 200, jsonBody: result };
     } catch (e: any) {
       ctx.error(`[hub-nightly] manual run error: ${String(e?.message ?? "error").replace(/\?.*$/, "")}`);
