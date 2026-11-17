@@ -97,6 +97,7 @@ FROM (VALUES
     ('clearview', 'Promotion', 'job'),          ('clearview', 'Demotion', 'job'),         ('clearview', 'Job change', 'job'),
     ('clearview', 'Pay change', 'pay'),
     ('clearview', 'Part-time to full-time', 'update'), ('clearview', 'Full-time to part-time', 'update'),
+    ('clearview', 'Leave of absence', 'terminate'),   ('clearview', 'Return from leave', 'create'),          -- script 24 (HR, 2026-11-16)
     ('rosnet', 'New hire', 'create'),           ('rosnet', 'Rehire', 'create'),
     ('rosnet', 'Cross-company transfer in', 'create'),
     ('rosnet', 'Termination', 'terminate'),     ('rosnet', 'Hired but never worked', 'terminate'),

@@ -117,6 +117,15 @@ module.exports = async () => {
     eq(plan(ctxFrom(t, { event: { terminationCategory: "Voluntary" } }), t.sensitive).plan.payload.terminationReasonId, 13078);
     const mapped = codes(); mapped.termination.set(codeKey("", "INVOLUNTARY"), { ukgCode: "INVOLUNTARY", company: "", destinationCode: "13090", destinationId: "13090" });
     eq(plan(ctxFrom(t, { codes: mapped }), t.sensitive).plan.payload.terminationReasonId, 13090, "a mapped category overrides the default");
+    // leave of absence: no category on the event -> the 'Leave' termination row of the company when present, else the default
+    const leave = fixtures.find(f => f.file === "leave-start.json");
+    eq(plan(ctxFrom(leave), leave.sensitive).plan.payload.terminationReasonId, 13078);
+    const leaveMapped = codes(); leaveMapped.termination.set(codeKey("SWN6T", "LEAVE"), { ukgCode: "LEAVE", company: "SWN6T", destinationCode: "6930", destinationId: "6930" });
+    eq(plan(ctxFrom(leave, { codes: leaveMapped }), leave.sensitive).plan.payload.terminationReasonId, 6930, "a 'Leave' row per company gives the leave termination its own reason");
+    // return from leave: rehire dated the return day even though the employment row's last hire date is years earlier
+    const ret = fixtures.find(f => f.file === "leave-return.json");
+    eq(plan(ctxFrom(ret), ret.sensitive).plan.payload.rehireDate, "2026-12-01");
+    eq(plan(ctxFrom(ret, { xref: null }), { ...ret.sensitive, sin: SIN, dateOfBirth: `${FAKE_YEAR}-07-14`, email: "a@b.c" }).plan.operation, "import", "a return Clearview never had is an import (the runner links by number first when live)");
   });
 
   await test("mapper: validation - SIN 9 digits, DOB present, rate > 0, hire date after the previous termination", () => {

@@ -81,7 +81,13 @@ alone, so leave events are built from `stage.leave_periods` (script 23), never f
   LOA reason) and run with `stage.usp_import_leave_periods`. `--dry-run` compares the report with the hub and writes nothing:
   the reconciliation. How the report reaches the hub on a schedule is not decided yet; for now it is exported and run by hand.
 - **Events:** Leave of absence on the first day; Return from leave the day after the period ends, unless a termination falls
-  inside the leave or on that day. Leave events are not mapped to any destination in `ref.destination_events` yet.
+  inside the leave or on that day.
+- **Clearview (script 24, HR decision 2026-11-16):** a leave of absence is sent as a **termination** dated the first day of
+  leave, so the Clearview profile goes inactive (reason: a `termination` row with `ukg_code` `Leave` per company in
+  `ref.destination_codes` when present, else the default 13078); a return from leave is sent as a **rehire** dated the day
+  after the leave ends. Before any live create without an xref, the connector looks the employee up in Clearview by external
+  id, then by employee number, and links them, so a return from leave (or a hire the previous integration created) is a
+  rehire rather than a second import. Rosnet does not take leave events.
 
 ### Nightly job (`hubNightlyTimer`, 06:15 UTC = 2:15 AM Toronto summer / 1:15 AM winter)
 1. Employment details for status A and L -> today's `stage.employment_snapshot` (Toronto date) + refresh current rows (with names)

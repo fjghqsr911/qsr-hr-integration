@@ -109,6 +109,19 @@ module.exports = async () => {
     eq(store.runs[0].status, "succeeded");
   });
 
+  await test("runner: live create without xref -> resolveExisting first: a hit is linked and the plan sees it; a miss imports; not asked when not live", async () => {
+    const store = fakeStore([row(1, { action: "create", eventType: "Return from leave" })]);
+    const c = fakeConnector(); let asked = 0; c.resolveExisting = async () => { asked++; return { externalId: "777", source: "matched" }; };
+    const { r } = await run(store, c);
+    eq([r.sent, asked], [1, 1]);
+    eq([store.xref.get("E1").externalId, store.xref.get("E1").source], ["777", "matched"], "link stored before planning");
+    eq(c.executed[0].steps[0].path, "/x/777", "the plan was built with the xref");
+    const store2 = fakeStore([row(2, { action: "create" })]); const c2 = fakeConnector(); asked = 0; c2.resolveExisting = async () => { asked++; return null; };
+    await run(store2, c2); eq(asked, 1); eq(store2.xref.has("E1"), false); eq(c2.executed[0].operation, "import", "a miss imports as before");
+    const store3 = fakeStore([row(3, { action: "create" })]); const c3 = fakeConnector(); asked = 0; c3.resolveExisting = async () => { asked++; return null; };
+    await run(store3, c3, ukg(), { liveEnabled: false }); eq(asked, 0, "shadow runs never call Clearview");
+  });
+
   await test("runner: live -> execute, last_sent recorded; same payload next time -> unchanged without execute; changed pay -> sent", async () => {
     const store = fakeStore([row(1)]);
     const c = fakeConnector();

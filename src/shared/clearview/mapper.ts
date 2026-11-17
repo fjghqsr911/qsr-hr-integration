@@ -134,8 +134,8 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
         const pay = payOf(sensitive);
         const store = (ev.toStore && isStore(ev.toStore)) ? ev.toStore : emp.orgLevel2;
         const sid = storeId(ctx, store);
-        const payload = {
-          rehireDate: emp.lastHireDate ?? eff, reportingStoreId: sid,
+        const payload = {                                                // a return from leave is a rehire dated the return day, not the hire
+          rehireDate: ev.eventType === "Return from leave" ? eff : (emp.lastHireDate ?? eff), reportingStoreId: sid,
           storeAssignments: [{ storeId: sid, employeeNameOnRegister: displayName(emp), employeeIdOnRegister: null }],
           jobs: [{ jobId: jobId(ctx, emp.jobCode), payTypeCode: pay.payTypeCode, payRate: pay.payRate, primaryJob: true,
                    salaryHours: pay.payTypeCode === "S" ? 40 : null }]
@@ -170,7 +170,10 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
       return done("import", payload);
     }
     case "terminate": {
-      const reason = lookup(ctx, "termination", ev.terminationCategory);
+      // a leave of absence makes the Clearview profile inactive: a termination dated the first day of leave. Its reason comes
+      // from a 'Leave' termination row in ref.destination_codes when one exists, else the default (13078).
+      const category = ev.terminationCategory ?? (ev.eventType === "Leave of absence" ? "Leave" : null);
+      const reason = lookup(ctx, "termination", category);
       const payload = { terminationDate: eff, terminationReasonId: reason ? toInt(reason.destinationId ?? reason.destinationCode, "terminationReasonId") : cfg.terminationReasonId };
       steps.push({ method: "GET", path: `/employee/${ref}`, note: "already inactive with the same date -> sent; different date -> PUT" });
       steps.push({ method: "POST", path: `/employeeStatus/${ref}/terminate`, body: payload });

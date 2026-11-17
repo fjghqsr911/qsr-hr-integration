@@ -230,6 +230,25 @@ export class ClearviewConnector implements Connector {
     return { responseRef: `employee:${id}`, xref };
   }
 
+  /** Before a create is planned (live only): is the employee already in Clearview? By externalId, else by employeeNumber.
+   *  A hit becomes the xref, so the plan is a rehire (return from leave, rehire, or a hire Flexspring already created)
+   *  instead of a duplicate import. null = unknown to Clearview: the import goes ahead. */
+  async resolveExisting(ctx: DeliveryContext): Promise<{ externalId: string; source: "matched" } | null> {
+    const emp = ctx.employment;
+    if (!emp) return null;
+    const company = emp.companyId ?? "";
+    try {
+      const id1 = idOf(await this.reads.employeeByExternalId(company, emp.employeeId));
+      if (id1) return { externalId: String(id1), source: "matched" };
+      if (!emp.employeeNumber) return null;
+      const byNumber = await this.reads.employeeByNumber(company, emp.employeeNumber);
+      const id2 = idOf(byNumber);
+      if (!id2) return null;
+      if (!sameName(stdOf(byNumber).lastName, emp.lastName)) this.log(`employee ${emp.employeeId}: linked by employeeNumber before create; last name differs from Clearview (name change?)`);
+      return { externalId: String(id2), source: "matched" };
+    } catch (e) { throw classify(e); }
+  }
+
   /** After an import: has Payroll added the employee? By externalId, else by employeeNumber + last name. */
   async resolveCreated(p: PendingCreate): Promise<{ externalId: string; source: "created" | "matched" } | null> {
     const company = p.companyId ?? "";

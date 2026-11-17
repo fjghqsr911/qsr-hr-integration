@@ -1,0 +1,21 @@
+{
+  "name": "leave return: a Return from leave for an employee Clearview has (xref) -> PUT rehire dated the return day (not the hire date)",
+  "delivery": { "action": "create", "eventType": "Return from leave", "effectiveDate": "2026-12-01", "store": "T02462" },
+  "event": { "eventType": "Return from leave", "effectiveDate": "2026-12-01", "fromCompany": "SWN6T", "toCompany": "SWN6T", "fromStore": "T02462", "toStore": "T02462",
+             "fromJob": "SH", "toJob": "SH", "terminationCategory": null },
+  "employment": { "companyId": "SWN6T", "employeeNumber": "100234", "employeeStatus": "A", "originalHireDate": "2023-05-01", "lastHireDate": "2023-05-01", "terminationDate": null,
+                  "orgLevel2": "T02462", "jobCode": "SH", "fullOrPartTime": "P", "firstName": "Ann", "preferredName": null, "lastName": "Example" },
+  "xref": { "externalId": "55501", "source": "extract" },
+  "sensitive": { "sin": null, "dateOfBirth": null, "email": null, "salaryOrHourly": "H", "hourlyPayRate": 17.5, "annualSalary": null },
+  "expected": {
+    "operation": "rehire",
+    "stepMethods": ["GET", "PUT"],
+    "lastStepPath": "/employeeStatus/55501/rehire",
+    "payload": {
+      "rehireDate": "2026-12-01",
+      "reportingStoreId": 18,
+      "storeAssignments": [{ "storeId": 18, "employeeNameOnRegister": "Ann Example", "employeeIdOnRegister": null }],
+      "jobs": [{ "jobId": 9444, "payTypeCode": "H", "payRate": 17.5, "primaryJob": true, "salaryHours": null }]
+    }
+  }
+}

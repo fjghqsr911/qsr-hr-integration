@@ -103,6 +103,9 @@ export interface Connector {
   redactForStore(payload: unknown): unknown;
   execute(plan: Plan, ctx: DeliveryContext): Promise<ExecuteResult>;
   resolveCreated(pending: PendingCreate): Promise<{ externalId: string; source: "created" | "matched" } | null>;
+  /** Optional, live only, before a create is planned without an xref: look the employee up at the destination so an
+   *  employee it already has (return from leave, rehire, a hire the previous integration created) is rehired, not imported twice. */
+  resolveExisting?(ctx: DeliveryContext): Promise<{ externalId: string; source: "matched" } | null>;
 }
 
 export interface QueueStats { pending: number; waiting: number; failed: number; dead: number; oldestPendingMinutes: number | null; }
@@ -222,6 +225,12 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
       }
 
       try {
+        // live create without an xref: ask the destination first, so someone it already has is rehired rather than imported again
+        if (live && !ctx.xref && d.action === "create" && connector.resolveExisting) {
+          calls++;
+          const found = await connector.resolveExisting(ctx);
+          if (found) { await store.upsertXref(destination, d.employeeId, found.externalId, found.source); ctx.xref = found; }
+        }
         // what the action needs from UKG, read at send time in both modes (so shadow surfaces "SIN missing in UKG")
         const sensitive = await readSensitive(ukg, d.employeeId, connector.sensitiveNeeds(ctx), sensitiveCache, () => calls++);
         const outcome = connector.plan(ctx, sensitive);

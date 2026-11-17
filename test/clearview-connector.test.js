@@ -189,6 +189,14 @@ module.exports = async () => {
     eq(seq(f).length, 2, "no write when the employee is unknown");
     err = null; try { await connector(fakeFetch({})).execute(planOf("pay", {}), ctxFor({ xref: null })); } catch (e) { err = e; }
     eq(err.kind, "waiting");
+    // resolveExisting (the runner calls it before a live create without xref): externalId hit; employeeNumber hit (note, no name); neither -> null; 401 -> abort
+    eq(await connector(fakeFetch({ "GET /api/v2/employee/externalId/EWLTH200NRY0": [200, emp("Active")] })).resolveExisting(ctxFor({ xref: null })), { externalId: "55501", source: "matched" });
+    logs.length = 0;
+    eq(await connector(fakeFetch({ "GET /api/v2/employee/employeeNumber/100234": [200, other] }), m => logs.push(m)).resolveExisting(ctxFor({ xref: null })), { externalId: "777", source: "matched" });
+    eq(logs.length, 1); assert(!logs[0].includes("Other"), "names never logged");
+    eq(await connector(fakeFetch({})).resolveExisting(ctxFor({ xref: null })), null);
+    err = null; try { await connector(fakeFetch({ "*": [401, ""] })).resolveExisting(ctxFor({ xref: null })); } catch (e) { err = e; }
+    eq(err.kind, "abort");
   });
 
   await test("connector: store transfer - GET assignments, POST new, end the open previous one (PUT), PATCH reporting store; existing assignment -> no POST; PATCH 400 -> warning only", async () => {
