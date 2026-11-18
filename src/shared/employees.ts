@@ -18,14 +18,20 @@ const same = (a: any, b: string) => String(a ?? "").toUpperCase() === b.toUpperC
 
 export interface Lookup<T> { record: T | null; filterIgnored: boolean; }
 
-/** Employment details (job, store, status, dates, pay). Prefers the home-company record. */
-export async function findEmployment(id: string): Promise<Lookup<any>> {
+/** One employee can hold a job in two companies at different rates (seen 2026-11-18: SWN1U and SWN6T). The record of
+ *  the company asked for, else the home-company record, else the first. */
+export function pickEmploymentRecord(matches: any[], companyId?: string | null): any | null {
+  return (companyId ? matches.find(r => same(r.companyID ?? r.companyId, companyId)) : undefined) ?? matches.find(r => r.isHomeCompany) ?? matches[0] ?? null;
+}
+
+/** Employment details (job, store, status, dates, pay). The record of `companyId` when given, else the home-company record. */
+export async function findEmployment(id: string, companyId?: string | null): Promise<Lookup<any>> {
   const rows = await ukgGet<any[]>(
     `/personnel/v1/employee-employment-details?employeeId=${encodeURIComponent(id)}&per_Page=100`);
   const list = Array.isArray(rows) ? rows : [];
   const matches = list.filter(r => same(r.employeeID, id));
   return {
-    record: matches.find(r => r.isHomeCompany) ?? matches[0] ?? null,
+    record: pickEmploymentRecord(matches, companyId),
     filterIgnored: list.length > 1 && matches.length === 0
   };
 }

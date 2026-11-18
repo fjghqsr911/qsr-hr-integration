@@ -71,7 +71,8 @@ export const EMPTY_SENSITIVE: Sensitive = { sin: null, dateOfBirth: null, email:
 
 export interface UkgSensitiveSource {
   person(employeeId: string): Promise<Pick<Sensitive, "sin" | "dateOfBirth" | "email"> | null>;
-  pay(employeeId: string): Promise<Pick<Sensitive, "salaryOrHourly" | "hourlyPayRate" | "annualSalary"> | null>;
+  /** companyId = the company the delivery belongs to: an employee with jobs in two companies has a rate in each. */
+  pay(employeeId: string, companyId?: string | null): Promise<Pick<Sensitive, "salaryOrHourly" | "hourlyPayRate" | "annualSalary"> | null>;
 }
 
 export interface PlanStep { method: "GET" | "POST" | "PUT" | "PATCH"; path: string; body?: unknown; note?: string; }
@@ -237,7 +238,7 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
           if (found) { await store.upsertXref(destination, d.employeeId, found.externalId, found.source, found); ctx.xref = found; }
         }
         // what the action needs from UKG, read at send time in both modes (so shadow surfaces "SIN missing in UKG")
-        const sensitive = await readSensitive(ukg, d.employeeId, connector.sensitiveNeeds(ctx), sensitiveCache, () => calls++);
+        const sensitive = await readSensitive(ukg, d.employeeId, ctx.employment?.companyId ?? null, connector.sensitiveNeeds(ctx), sensitiveCache, () => calls++);
         const outcome = connector.plan(ctx, sensitive);
         if (outcome.decision === "skipped") { await store.markSkipped(d.deliveryId, outcome.reason); r.skipped++; continue; }
         if (outcome.decision === "review") { await store.markReview(d.deliveryId, outcome.reason); r.review++; stop(); continue; }
@@ -324,13 +325,13 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
   }
 }
 
-async function readSensitive(ukg: UkgSensitiveSource, employeeId: string, needs: SensitiveNeed[], cache: Map<string, Sensitive>, count: () => void): Promise<Sensitive> {
-  const key = `${employeeId}|${[...needs].sort().join(",")}`;
+async function readSensitive(ukg: UkgSensitiveSource, employeeId: string, companyId: string | null, needs: SensitiveNeed[], cache: Map<string, Sensitive>, count: () => void): Promise<Sensitive> {
+  const key = `${employeeId}|${companyId ?? ""}|${[...needs].sort().join(",")}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const s: Sensitive = { ...EMPTY_SENSITIVE };
   if (needs.includes("person")) { count(); Object.assign(s, (await ukg.person(employeeId)) ?? {}); }
-  if (needs.includes("pay")) { count(); Object.assign(s, (await ukg.pay(employeeId)) ?? {}); }
+  if (needs.includes("pay")) { count(); Object.assign(s, (await ukg.pay(employeeId, companyId)) ?? {}); }
   cache.set(key, s);
   return s;
 }

@@ -180,8 +180,17 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: RosnetMapp
       const to = jobCode(ctx, company, ev.toJob);
       const fromRow = findCode(ctx.codes, "job", company, ev.fromJob);
       const from = fromRow ? toInt(fromRow.destinationCode, "job code") : null;
-      if (from === to) return { decision: "skipped", reason: `UKG jobs ${ev.fromJob} and ${ev.toJob} are the same Rosnet job code ${to}` };
       const id = ident(ctx);
+      if (from === to) {
+        // Two UKG jobs with one Rosnet code (RMIT -> RMH, both 610): no job to add or remove, but the rate usually changes
+        // with the job and the hub raises no separate Pay change event for that row. Bring the rate in line, as Flexspring does.
+        const same: PayPayload = { ...id, clientCode: cfg.clientCode, locationNumber: location(ctx, company, store),
+                                   jobInfo: { jobCode: to, payRate: rateOf(sensitive), eventEffectiveDate: eff } };
+        get(id.posProvider_EmployeeUID, same.locationNumber, `UKG jobs ${ev.fromJob} and ${ev.toJob} are the same Rosnet job code ${to}: only the rate is checked`);
+        steps.push({ method: "POST", path: "/PayRate", body: { posProvider_EmployeeUID: id.posProvider_EmployeeUID, locationNumber: same.locationNumber, clientCode: cfg.clientCode }, note: "same rate already -> nothing sent" });
+        steps.push({ method: "PUT", path: "/Employee/modifyJob", body: jobBody(same, same.jobInfo) });
+        return done("pay", same);
+      }
       const payload: JobPayload = {
         ...id, clientCode: cfg.clientCode, locationNumber: location(ctx, company, store),
         add: { jobCode: to, payRate: rateOf(sensitive), eventEffectiveDate: eff }, remove: from === null ? null : { jobCode: from, eventEffectiveDate: eff }

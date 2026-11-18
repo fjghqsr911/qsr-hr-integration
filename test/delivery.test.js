@@ -83,9 +83,9 @@ module.exports = async () => {
     return walk(v, null);
   }
   const ukg = (over = {}) => ({
-    calls: [],
+    calls: [], companies: [],
     async person(id) { this.calls.push(`person:${id}`); return over.person === null ? null : { sin: SIN, dateOfBirth: `${FAKE_YEAR}-07-14`, email: "ann@example.com", ...(over.person ?? {}) }; },
-    async pay(id) { this.calls.push(`pay:${id}`); return { salaryOrHourly: "H", hourlyPayRate: 17.5, annualSalary: null }; }
+    async pay(id, company) { this.calls.push(`pay:${id}`); this.companies.push(company ?? null); return { salaryOrHourly: "H", hourlyPayRate: 17.5, annualSalary: null }; }
   });
   const logs = () => { const l = { all: [], log(m) { l.all.push(m); }, warn(m) { l.all.push(`WARN ${m}`); }, error(m) { l.all.push(`ERROR ${m}`); } }; return l; };
   const run = (store, connector, u = ukg(), over = {}) => {
@@ -105,6 +105,7 @@ module.exports = async () => {
     noYear(stored, "shadow payload"); assert(!stored.includes(SIN), "SIN digits in shadow payload"); assert(!stored.includes("17.5"), "pay in shadow payload");
     assert(stored.includes('"mode":"shadow"') && stored.includes('"operation":"import"') && stored.includes("$lookup:employeeId"), "stored copy shape");
     eq(u.calls, ["person:E1", "pay:E1"], "person + pay read in shadow too");
+    eq(u.companies, ["SWN6T"], "pay is read for the company the delivery belongs to");
     eq(c.executed.length, 0, "nothing sent in shadow");
     eq(store.runs[0].status, "succeeded");
   });
@@ -287,6 +288,11 @@ module.exports = async () => {
     eq(pickEmployment(rows, { toCompany: null, fromCompany: null }).companyId, "SWN6T");
     eq(pickEmployment(rows, null).companyId, "SWN6T"); eq(pickEmployment([], null), null);
     eq(pickEmployment(rows, { toCompany: "ZZZ" }).companyId, "SWN6T", "unknown company falls back to home");
+    // UKG employment details of one employee with a job in two companies: the rate of the company asked for
+    const { pickEmploymentRecord } = require(path.join(DIST, "shared", "employees.js"));
+    const jobs = [{ companyID: "SWN6T", isHomeCompany: true, hourlyPayRate: 18.85 }, { companyID: "SWN1U", isHomeCompany: false, hourlyPayRate: 21 }];
+    eq([pickEmploymentRecord(jobs, "SWN1U").hourlyPayRate, pickEmploymentRecord(jobs, "swn6t").hourlyPayRate, pickEmploymentRecord(jobs).hourlyPayRate,
+        pickEmploymentRecord(jobs, "OTHER").hourlyPayRate, pickEmploymentRecord([], "X")], [21, 18.85, 18.85, 18.85, null]);
   });
 
   // ---------------------------------------------------------------- SqlDeliveryStore ----------------------------------------------------------------

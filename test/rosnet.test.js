@@ -127,6 +127,10 @@ module.exports = async () => {
   await test("rosnet client: the sandbox's double-encoded error body gives the code and Rosnet's message; the message names the route template, never the path", async () => {
     eq(problemOf(SHAPES.errors.rawAlreadyExists), { code: 2500, message: "AddEmployee failed. The employee already exists." });
     eq(problemOf('{"title":"Bad Request","detail":"x 123456789012 y"}'), { code: null, message: "x ************ y" });
+    // production shape of a model validation error (Flexspring transaction, 2026-11): the field error, not "See the errors property"
+    const invalid = JSON.stringify({ type: "https://rosnet.com/modelvalidationproblem", title: "One or more model validation errors occurred.", status: 422, detail: "See the errors property for details.",
+                                     instance: "/api/v1/Employee/addEmployee", errors: { "$.jobInfo[0].jobCode": ["The JSON value could not be converted to System.Int32."] }, traceId: "x" });
+    eq(problemOf(invalid), { code: null, message: "$.jobInfo[0].jobCode: The JSON value could not be converted to System.Int32." });
     const srv = fakeRosnet({ intercept: (m, p) => (p.includes("getEmployeeByName") ? { status: 400, headers: {}, text: JSON.stringify(JSON.stringify({ errorCode: 3800, errorMessage: SHAPES.errors.noLocationAccess })) } : null) });
     const e = await rejects(clientOf(srv).employeesByName("Dana", "ONeil", 6000), x => x instanceof RosnetError && x.code === 3800 && x.status === 400, "3800 is an error, not a not-found");
     assert(e.message.includes("{first}/{last}/{location}") && !/Dana|ONeil/.test(e.message), "route template only");
@@ -232,11 +236,12 @@ module.exports = async () => {
     eq([t.payload.terminationEffectiveDate, t.steps.map(s => s.method)], ["2026-11-10T00:00:00", ["GET", "PUT"]]);
   });
 
-  await test("rosnet mapper: job change = add the new code, remove the old; two UKG jobs with one Rosnet code are skipped; pay change = modifyJob on the current job", () => {
+  await test("rosnet mapper: job change = add the new code, remove the old; two UKG jobs with one Rosnet code only bring the rate in line; pay change = modifyJob on the current job", () => {
     const j = planOf(ctxOf("job", "Promotion", { event: { fromJob: "CM", toJob: "SS" }, employment: { jobCode: "SS" } })).plan;
     eq([j.operation, j.payload.add, j.payload.remove], ["job", { jobCode: 200, payRate: 17.26, eventEffectiveDate: "2026-11-10T00:00:00" }, { jobCode: 1, eventEffectiveDate: "2026-11-10T00:00:00" }]);
     eq(j.steps.map(s => `${s.method} ${s.path}`).slice(1), ["PUT /Employee/addJob", "PUT /Employee/removeJob"]);
-    eq(planOf(ctxOf("job", "Job change", { event: { fromJob: "CL", toJob: "CT" } })).decision, "skipped");
+    const same = planOf(ctxOf("job", "Job change", { event: { fromJob: "CL", toJob: "CT" }, employment: { jobCode: "CT" } }));     // RMIT -> RMH in production: the rate changes with the job
+    eq([same.decision, same.plan.operation, same.plan.payload.jobInfo.jobCode, same.plan.steps.map(s => s.path).slice(1)], ["send", "pay", 5, ["/PayRate", "/Employee/modifyJob"]]);
     eq(planOf(ctxOf("job", "Job change", { event: { fromJob: "ZZ", toJob: "SS" } })).plan.payload.remove, null);
     const p = planOf(ctxOf("pay", "Pay change")).plan;
     eq([p.operation, p.payload.jobInfo, p.steps.map(s => s.path).slice(1)], ["pay", { jobCode: 1, payRate: 17.26, eventEffectiveDate: "2026-11-10T00:00:00" }, ["/PayRate", "/Employee/modifyJob"]]);

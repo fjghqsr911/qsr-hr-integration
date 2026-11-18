@@ -97,8 +97,8 @@ export const ukgSensitive: UkgSensitiveSource = {
     const { record: p } = await findPerson(id);
     return p ? { sin: p.nationalId || p.ssn || null, dateOfBirth: dateOnly(p.dateOfBirth), email: p.emailAddress ?? null } : null;
   },
-  async pay(id) {
-    const { record: e } = await findEmployment(id);
+  async pay(id, companyId) {
+    const { record: e } = await findEmployment(id, companyId);
     return e ? { salaryOrHourly: e.salaryOrHourly ?? null, hourlyPayRate: num(e.hourlyPayRate), annualSalary: num(e.annualSalary) } : null;
   }
 };

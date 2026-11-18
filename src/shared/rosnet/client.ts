@@ -78,8 +78,10 @@ export function problemOf(text: string): { code: number | null; message: string 
     if (j && typeof j === "object") {
       const c = Number(j.errorCode);
       if (Number.isInteger(c) && c > 0) code = c;
-      const pick = j.errorMessage ?? j.detail ?? j.title ?? j.error_description ?? j.error ?? j.message ??
-                   (j.errors && typeof j.errors === "object" ? Object.entries(j.errors).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(" ") : v}`).join("; ") : null);
+      // a model validation problem (422, seen in production) says "See the errors property for details." in detail: the field errors come first
+      const text = (v: unknown) => Array.isArray(v) ? v.join(" ") : v && typeof v === "object" ? Object.values(v as object).join(" ") : String(v);
+      const fields = j.errors && typeof j.errors === "object" ? Object.entries(j.errors).map(([k, v]) => `${k}: ${text(v)}`).join("; ") : "";
+      const pick = j.errorMessage ?? (fields || null) ?? j.detail ?? j.title ?? j.error_description ?? j.error ?? j.message;
       if (pick) msg = String(pick);
     }
   } catch { /* plain text */ }

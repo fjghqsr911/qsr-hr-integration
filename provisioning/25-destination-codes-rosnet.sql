@@ -5,13 +5,13 @@
 --                 location lookup: an exact three-way match. W06178 is 6178 (the design spec said 6187, a typo).
 --                 POST /api/hub/rosnet/discover?what=codes rewrites these rows from production once credentials exist.
 --   job:          UKG job code to the Aloha job code. The first eight rows are the live Flexspring lookup
---                 (QSR_rosnetJobs export of 2026-10-30); all six codes exist in Rosnet. GMIT is a PROPOSAL (not in the
---                 Flexspring lookup): confirm with HR before any W store goes live.
+--                 (QSR_rosnetJobs export of 2026-10-30); all six codes exist in Rosnet. GMIT is not in the Flexspring
+--                 lookup (its new hire fails there): HR decision 2026-11-18, GMIT goes to 650 General Mg like GM.
 --   termination:  UKG termination category to the Rosnet termination code. Rosnet requires a code on every termination
---                 and on every transfer. PROPOSAL for HR to confirm (what Flexspring sends today is not known):
---                 Voluntary 20 Voluntary Quit, Involuntary and Unknown 1 Termination, No-show 2 No Show,
---                 Administrative and Leave 3 Deactivate, Transfer 100 Transfer, Default 1. Without a row the connector
---                 uses the Default row, and without that the setting ROSNET_TERM_CODE.
+--                 and on every transfer. DECISION 2026-11-18 (HR): code 1 Termination for EVERYTHING, transfers
+--                 included. Rosnet is not used for tracking or reporting, so one code is simpler. It is also what
+--                 Flexspring sends today (seen on a leave of absence, 2026-11-16).
+--                 Without a row the connector uses the Default row, and without that the setting ROSNET_TERM_CODE.
 -- Rosnet termination codes (2026-11-16): 1 Termination, 2 No Show, 3 Deactivate, 4 Shift Manager, 20 Voluntary Quit,
 -- 21 Quit No Notice, 22 Job Performance, 23 Excessive Tardiness, 24 Excessive Absenteeism, 25 No Show/ No Call, 26 Moving,
 -- 27 Other Job, 28 Back to School, 29 Rude or Discourteous Behaviour, 30 Insubordination, 100 Transfer.
@@ -49,15 +49,15 @@ INSERT INTO @codes (code_type, company, ukg_code, destination_code, destination_
     ('job', '', 'RMH',  '610', NULL, 'Asst Mgr (Flexspring lookup)'),
     ('job', '', 'RMIT', '610', NULL, 'Asst Mgr (Flexspring lookup)'),
     ('job', '', 'GM',   '650', NULL, 'General Mg (Flexspring lookup)'),
-    ('job', '', 'GMIT', '670', NULL, 'AGMIT / GM in Trn. PROPOSAL: not in the Flexspring lookup, HR to confirm'),
-    -- terminations: PROPOSAL, HR to confirm
-    ('termination', '', 'Voluntary',      '20',  NULL, 'Voluntary Quit. PROPOSAL, HR to confirm'),
-    ('termination', '', 'Involuntary',    '1',   NULL, 'Termination. PROPOSAL, HR to confirm'),
-    ('termination', '', 'Unknown',        '1',   NULL, 'Termination. PROPOSAL, HR to confirm'),
-    ('termination', '', 'No-show',        '2',   NULL, 'No Show (hired but never worked). PROPOSAL, HR to confirm'),
-    ('termination', '', 'Administrative', '3',   NULL, 'Deactivate. PROPOSAL, HR to confirm'),
-    ('termination', '', 'Leave',          '3',   NULL, 'Deactivate (leave of absence: profile made inactive, rehired on return). PROPOSAL, HR to confirm'),
-    ('termination', '', 'Transfer',       '100', NULL, 'Transfer (store transfer and move to another company)'),
+    ('job', '', 'GMIT', '650', NULL, 'General Mg, same as GM. HR decision 2026-11-18 (not in the Flexspring lookup)'),
+    -- terminations: code 1 for every termination (decision 2026-11-18, as Flexspring sends today)
+    ('termination', '', 'Voluntary',      '1',   NULL, 'Termination. Decision 2026-11-18: code 1 for every termination'),
+    ('termination', '', 'Involuntary',    '1',   NULL, 'Termination. Decision 2026-11-18: code 1 for every termination'),
+    ('termination', '', 'Unknown',        '1',   NULL, 'Termination. Decision 2026-11-18: code 1 for every termination'),
+    ('termination', '', 'No-show',        '1',   NULL, 'Termination (hired but never worked). Decision 2026-11-18: code 1 for every termination'),
+    ('termination', '', 'Administrative', '1',   NULL, 'Termination. Decision 2026-11-18: code 1 for every termination'),
+    ('termination', '', 'Leave',          '1',   NULL, 'Termination (leave of absence: profile made inactive, rehired on return). As Flexspring today'),
+    ('termination', '', 'Transfer',       '1',   NULL, 'Termination (closes the store left on a transfer). HR decision 2026-11-18: one code for everything'),
     ('termination', '', 'Default',        '1',   NULL, 'Termination: used when a category has no row');
 
 MERGE ref.destination_codes WITH (HOLDLOCK) AS t
