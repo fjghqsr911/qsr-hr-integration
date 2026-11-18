@@ -31,6 +31,10 @@
                      whether the syncs or the LOA report supplied it. entered_utc = when a sync first saw the change,
                      or noon UTC on the effective date for periods only the LOA report had (the true entry time is
                      not in the report).
+    profile_change   a name or an email changed for an existing employee: stage.profile_changes
+                     (27-profile-changes.sql), NOT job history. Name change / Email change, one per company record that
+                     is not terminated that day, with the store and job in effect. None when a hire or rehire of the
+                     employee was entered in the two days before the change was seen: the hire carries both.
     store_change     org_level2 changed.          district_change   org_level1 changed, same store.
     job_change       job_code changed.            ftpt_change       full_or_part_time changed.
     pay_change       UKG rate-change flag or a Pay reason code (no amounts are stored).
@@ -227,6 +231,42 @@ BEGIN
                               h.job_effective_date, h.date_time_created DESC, h.system_id DESC) j
         WHERE v.fires = 1
           AND (@all = 1 OR p.employee_id IN (SELECT employee_id FROM #ids));
+
+    /* 3c. Name and email changes of existing employees, from stage.profile_changes (27-profile-changes.sql).
+           One event per company record that is not terminated that day. Store and job as in effect that day: the latest
+           job-history row on or before it, else the first row after (a hire entered ahead of its start date). */
+    IF OBJECT_ID('stage.profile_changes', 'U') IS NOT NULL
+    BEGIN
+        INSERT INTO #ev (employee_id, company_id, rule_applied, event_type, effective_date, entered_utc,
+                         from_company, to_company, from_store, to_store, from_job, to_job,
+                         termination_category, counts_in_turnover, reason_code, source_system_ids, event_key)
+        SELECT p.employee_id, c.company_id, 'profile_change',
+               CASE p.change_type WHEN 'name' THEN 'Name change' ELSE 'Email change' END,
+               p.change_date, p.seen_utc,
+               c.company_id, c.company_id, j.store, j.store, j.job_code, j.job_code,
+               NULL, NULL, NULL,
+               CONCAT('profile|', p.change_type, '|', CONVERT(char(10), p.change_date, 23)),
+               CAST(HASHBYTES('SHA2_256', CONCAT(p.employee_id, '|', c.company_id, '|profile|', p.change_type, '|',
+                                                 CONVERT(char(10), p.change_date, 23))) AS binary(32))
+        FROM stage.profile_changes p
+        CROSS APPLY (SELECT DISTINCT h.company_id FROM #jh h WHERE h.employee_id = p.employee_id) c
+        CROSS APPLY (SELECT TOP 1 h.store, h.job_code, h.status
+                     FROM #jh h
+                     WHERE h.employee_id = p.employee_id AND h.company_id = c.company_id
+                     ORDER BY CASE WHEN h.job_effective_date <= p.change_date THEN 0 ELSE 1 END,
+                              CASE WHEN h.job_effective_date <= p.change_date THEN h.job_effective_date END DESC,
+                              h.job_effective_date, h.date_time_created DESC, h.system_id DESC) j
+        WHERE j.status <> 'T'
+          /* not right after a hire or rehire: that event carries the name and the email */
+          AND NOT EXISTS (SELECT 1 FROM #ev e
+                          WHERE e.employee_id = p.employee_id AND e.rule_applied IN ('hire', 'rehire')
+                            AND e.entered_utc >= DATEADD(day, -2, p.seen_utc))
+          AND (@all = 1 OR p.employee_id IN (SELECT employee_id FROM #ids));
+
+        UPDATE p SET built_utc = SYSUTCDATETIME()
+        FROM stage.profile_changes p
+        WHERE p.built_utc IS NULL AND (@all = 1 OR p.employee_id IN (SELECT employee_id FROM #ids));
+    END
 
     /* 4. Apply: insert new, update changed, remove events these employees no longer have. Then (5) queue deliveries,
           in the same transaction, so an event change and its deliveries are written together or not at all. */

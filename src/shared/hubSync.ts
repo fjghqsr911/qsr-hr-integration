@@ -50,6 +50,8 @@ export interface HubStore {
   replaceEmployees(employeeIds: string[], employment: EmploymentRow[], jobHistory: JobHistoryRow[]): Promise<void>;
   /** Returns the number of events rebuilt, or null if the event-rules procedure is not installed yet. */
   rebuildEvents(employeeIds: string[]): Promise<number | null>;
+  /** Employees whose name or email changed (recorded while employment and contacts were written) and whose events are not built yet. */
+  profileChangeIds?(): Promise<string[]>;
   // ---- contacts (sensitive tier; active / on-leave employees only) ----
   upsertContacts(contacts: ContactRow[], deleteIds: string[]): Promise<void>;
   replaceAllContacts(contacts: ContactRow[]): Promise<void>;
@@ -259,6 +261,9 @@ export async function runIntradaySync(store: HubStore, ukg: UkgSource, opts: Syn
           upserts.push(extractContact(id, [...(changeRecs.get(id) ?? []), ...(c.employmentRaw.get(id) ?? [])], opts.contacts));
         }
         await store.upsertContacts(upserts, removes);
+        // a new email address is recorded while the contacts are written, after the events were built: build those now
+        const profiles = (await store.profileChangeIds?.()) ?? [];
+        if (profiles.length) events = (events ?? 0) + ((await store.rebuildEvents(profiles)) ?? 0);
         contactsUpdated = upserts.length; contactsRemoved = removes.length;
       }
     }
@@ -386,6 +391,9 @@ export async function runNightly(store: HubStore, ukg: UkgSource,
       if (hasAnyContact(contact)) contacts.push(contact);
     }
     await store.replaceAllContacts(contacts);
+    // names (employees with no other change, step 2) and email addresses that changed were recorded by those writes
+    const profiles = (await store.profileChangeIds?.()) ?? [];
+    if (profiles.length) await store.rebuildEvents(profiles);
 
     // 5. monthly purge
     const purged = snapshotDate.endsWith("-01") ? await store.purge(opts.lookbackMonths) : null;

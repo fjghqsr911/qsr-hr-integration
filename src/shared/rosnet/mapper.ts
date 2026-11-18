@@ -31,6 +31,9 @@ export const DEFAULT_ROSNET_CONFIG: RosnetMapperConfig = { companies: ["SWN1U"],
 export const ROSNET_STORE = /^W\d{5}$/i;
 export const NOW = "$now";
 
+import { PROFILE_EVENTS } from "../delivery";
+/** A name or email change: the names and the email as UKG holds them now, for the store the employee is at. */
+export interface ProfilePayload extends Ident { clientCode: string; locationNumber: number; emailId: string | null; }
 export interface JobInfo { jobCode: number; payRate: number; eventEffectiveDate: string; }
 export interface Ident { posProvider_EmployeeUID: string; payrollProvider_EmployeeUID: string; firstName: string; lastName: string; }
 export interface HirePayload extends Ident { clientCode: string; locationNumber: number; eventEffectiveDate: string;
@@ -57,6 +60,7 @@ export function sensitiveNeeds(ctx: DeliveryContext): SensitiveNeed[] {
   switch (ctx.delivery.action) {
     case "create": case "store": return ["person", "pay"];
     case "job": case "pay": return ["pay"];
+    case "update": return PROFILE_EVENTS.has(ctx.delivery.eventType) ? ["person"] : [];       // the email
     default: return [];
   }
 }
@@ -121,7 +125,7 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: RosnetMapp
     return company === "M9WOJ" ? { decision: "review", reason: "HR to handle: company M9WOJ is not sent to Rosnet" }
                                : { decision: "skipped", reason: `company ${company} is not sent to Rosnet` };
   }
-  if (d.action === "update") return { decision: "skipped", reason: `${ev.eventType} is not sent to Rosnet` };
+  if (d.action === "update" && !PROFILE_EVENTS.has(ev.eventType)) return { decision: "skipped", reason: `${ev.eventType} is not sent to Rosnet` };
 
   const eff = stamp(ev.effectiveDate);
   const steps: PlanStep[] = [];
@@ -211,6 +215,15 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: RosnetMapp
       steps.push({ method: "PUT", path: "/Employee/modifyJob", body: jobBody(payload, payload.jobInfo) });
       return done("pay", payload);
     }
+    case "update": {                                    // Name change / Email change (anything else was skipped above)
+      const store = pickStore(d.store, ev.toStore, emp.orgLevel2);
+      if (!store) return notRosnet(d.store ?? emp.orgLevel2);
+      const id = ident(ctx);
+      const payload: ProfilePayload = { ...id, clientCode: cfg.clientCode, locationNumber: location(ctx, company, store), emailId: (sensitive.email ?? "").trim() || null };
+      get(id.posProvider_EmployeeUID, payload.locationNumber, "no profile here yet -> retried; terminated here -> nothing sent");
+      steps.push({ method: "PUT", path: "/Employee/updateEmployeeInfo", body: profileBody(payload) });
+      return done("profile", payload);
+    }
     default:
       throw new MappingError(`unsupported action ${d.action}`);
   }
@@ -245,6 +258,11 @@ export const jobBody = (p: Ident & { locationNumber: number }, jobInfo: JobInfo,
 export const emailBody = (p: Ident & { clientCode: string }, location: number, emailId: string, now: string = NOW, uid?: string) => ({
   clientCode: p.clientCode, payrollProvider_EmployeeUID: p.payrollProvider_EmployeeUID, posProvider_EmployeeUID: uid ?? p.posProvider_EmployeeUID,
   locationNumber: location, updateDate: now, emailId
+});
+
+/** Names and email as they are now. No email in UKG: the field is left out, so Rosnet keeps what it has. */
+export const profileBody = (p: ProfilePayload, now: string = NOW, uid?: string) => ({
+  clientCode: p.clientCode, ...idOf(p, uid), locationNumber: p.locationNumber, updateDate: now, ...(p.emailId ? { emailId: p.emailId } : {})
 });
 
 export function isPlan(o: PlanOutcome): o is { decision: "send"; plan: Plan } { return o.decision === "send"; }

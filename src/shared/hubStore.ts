@@ -8,6 +8,12 @@ import { ContactRow } from "./contacts";
 const CAPTURE_STATUS = (param: string) =>
   `IF OBJECT_ID('stage.usp_capture_status', 'P') IS NOT NULL EXEC stage.usp_capture_status @emp = ${param};`;
 
+/** Records a changed name or a new email address of an existing employee (stage.profile_changes, dates only) from the
+ *  rows about to be written, before stage.employment_current / stage.employee_contact are overwritten. Skipped until
+ *  27-profile-changes.sql has run. `emp` / `contacts` = the batch parameter holding those rows as JSON, or "NULL". */
+const CAPTURE_PROFILE = (emp: string, contacts: string) =>
+  `IF OBJECT_ID('stage.usp_capture_profile', 'P') IS NOT NULL EXEC stage.usp_capture_profile @emp = ${emp}, @contacts = ${contacts};`;
+
 /** HubStore backed by sqldb-hrint (stage / ref / rpt schemas). */
 export class SqlHubStore implements HubStore {
   constructor(private pool: sql.ConnectionPool) {}
@@ -69,6 +75,7 @@ export class SqlHubStore implements HubStore {
         .input("jh", sql.NVarChar(sql.MAX), JSON.stringify(jobHistory))
         .query(`
           ${CAPTURE_STATUS("@emp")}
+          ${CAPTURE_PROFILE("@emp", "NULL")}
           DELETE FROM stage.employment_current WHERE employee_id IN (SELECT value FROM OPENJSON(@ids));
           INSERT INTO stage.employment_current
             (employee_id, company_id, employee_number, is_home_company, employee_status, status_start_date, original_hire_date,
@@ -122,6 +129,14 @@ export class SqlHubStore implements HubStore {
   }
 
   // ---------------- contacts (sensitive tier) ----------------
+  /** Employees with a recorded name or email change that rpt.usp_rebuild_events has not looked at yet. */
+  async profileChangeIds(): Promise<string[]> {
+    const r = await this.pool.request().query(`
+      IF OBJECT_ID('stage.profile_changes', 'U') IS NOT NULL
+        SELECT DISTINCT employee_id FROM stage.profile_changes WHERE built_utc IS NULL;`);
+    return (r.recordset ?? []).map((x: any) => String(x.employee_id));
+  }
+
   /* Intraday: the change feed has no date of birth, so birth_month / birth_day are never changed here
      (matched rows keep the nightly's values; new rows start NULL until the next nightly). */
   async upsertContacts(contacts: ContactRow[], deleteIds: string[]): Promise<void> {
@@ -130,6 +145,7 @@ export class SqlHubStore implements HubStore {
       .input("c", sql.NVarChar(sql.MAX), JSON.stringify(contacts))
       .input("d", sql.NVarChar(sql.MAX), JSON.stringify(deleteIds))
       .query(`
+        ${CAPTURE_PROFILE("NULL", "@c")}
         DELETE FROM stage.employee_contact WHERE employee_id IN (SELECT value FROM OPENJSON(@d));
         MERGE stage.employee_contact AS t
         USING (SELECT * FROM OPENJSON(@c) WITH (employee_id varchar(20), personal_email nvarchar(254), work_email nvarchar(254),
@@ -152,6 +168,7 @@ export class SqlHubStore implements HubStore {
     await tx.begin();
     try {
       await new sql.Request(tx).input("c", sql.NVarChar(sql.MAX), JSON.stringify(contacts)).query(`
+        ${CAPTURE_PROFILE("NULL", "@c")}
         DELETE FROM stage.employee_contact;
         INSERT INTO stage.employee_contact (employee_id, personal_email, work_email, work_phone, company_phone, birth_month, birth_day, source)
         SELECT employee_id, personal_email, work_email, work_phone, company_phone, birth_month, birth_day, 'nightly'
@@ -179,6 +196,7 @@ export class SqlHubStore implements HubStore {
   async upsertEmployment(rows: EmploymentRow[]): Promise<void> {
     await this.pool.request().input("r", sql.NVarChar(sql.MAX), JSON.stringify(rows)).query(`
       ${CAPTURE_STATUS("@r")}
+      ${CAPTURE_PROFILE("@r", "NULL")}
       MERGE stage.employment_current AS t
       USING (SELECT * FROM OPENJSON(@r) WITH (
             employee_id varchar(20), company_id varchar(10), employee_number varchar(20), is_home_company bit,

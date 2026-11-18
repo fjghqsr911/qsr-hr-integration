@@ -13,6 +13,8 @@ import { createHash } from "crypto";
 */
 
 export type DeliveryAction = "create" | "job" | "store" | "pay" | "update" | "terminate";
+/** A name or an email changed in UKG for an existing employee (stage.profile_changes). Sent as action "update". */
+export const PROFILE_EVENTS: ReadonlySet<string> = new Set(["Name change", "Email change"]);
 export const ACTION_RANK: Record<DeliveryAction, number> = { create: 0, job: 1, store: 2, pay: 3, update: 4, terminate: 5 };
 
 /** Retry schedule for transient failures: after the 1st failure wait 5 min, then 30 min, 2 h, 12 h; the 5th failure is dead. */

@@ -1,7 +1,7 @@
 import { Connector, DeliveryContext, DeliveryError, ExecuteResult, Plan, Sensitive, SensitiveNeed, XrefIds } from "../delivery";
 import { CfcEmployee, ROSNET_CODES, RosnetClient, RosnetError } from "./client";
 import { DEFAULT_ROSNET_CONFIG, HirePayload, Ident, JobPayload, PayPayload, RosnetMapperConfig, TerminatePayload, TransferPayload,
-         addBody, emailBody, jobBody, plan as planFor, redactForHash, redactForStore, rehireBody, sensitiveNeeds, terminateBody, transferBody } from "./mapper";
+         addBody, emailBody, profileBody, jobBody, plan as planFor, redactForHash, redactForStore, rehireBody, sensitiveNeeds, terminateBody, transferBody } from "./mapper";
 
 /*
   Executes a mapper Plan against Rosnet EDT. Every operation starts with a GET of the employee at the location (the
@@ -73,6 +73,7 @@ export class RosnetConnector implements Connector {
         case "transfer": return await this.transfer(plan.payload as TransferPayload, ctx);
         case "job": return await this.job(plan.payload as JobPayload, ctx);
         case "pay": return await this.pay(plan.payload as PayPayload, ctx);
+        case "profile": return await this.profile(plan.payload as import("./mapper").ProfilePayload);
         default: throw new DeliveryError("dead", `unsupported operation ${plan.operation}`);
       }
     } catch (e) { throw classify(e); }
@@ -171,6 +172,18 @@ export class RosnetConnector implements Connector {
     const added = await this.writeUnless(ROSNET_CODES.alreadyExists, "POST", "/Employee/addEmployee", addBody(hire, this.stamp(), uid));
     return { responseRef: `add:${to}`, warning: RosnetConnector.join(from === null ? null : `${old ? "not active" : "no profile"} at ${from} in Rosnet: added at ${to}`, !added && "Rosnet reports the employee already exists"),
              xref: { externalId: uid, source: "created", payrollId: p.payrollProvider_EmployeeUID } };
+  }
+
+  /** A name or email changed in UKG: updateEmployeeInfo at the employee's store. Looked up by UID only (the name is what
+   *  changed). No profile there yet: retry. Terminated there: nothing to update. */
+  private async profile(p: import("./mapper").ProfilePayload): Promise<ExecuteResult> {
+    const loc = p.locationNumber;
+    const here = await this.client.employee(p.posProvider_EmployeeUID, loc);
+    if (!here) throw new DeliveryError("retry", `employee has no profile at Rosnet location ${loc} (not sent yet, still being processed, or created under another id)`);
+    const xref = this.xref(here, here.uid, p.payrollProvider_EmployeeUID, "matched");
+    if (!here.active) return { responseRef: `profile:${loc}`, warning: "terminated in Rosnet; nothing sent", xref };
+    await this.client.write("PUT", "/Employee/updateEmployeeInfo", profileBody(p, this.stamp(), here.uid));
+    return { responseRef: `profile:${loc}`, xref };
   }
 
   /** The active profile a job or pay change applies to. Not there, terminated, or without any job yet: retry (a hire,

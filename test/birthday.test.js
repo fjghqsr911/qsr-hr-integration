@@ -164,6 +164,21 @@ module.exports = async () => {
     assert(!/birth_/i.test(using), "USING source must not read birthdays from intraday JSON");
     assert(/AND birth_month IS NULL;/.test(q), "empty rows are only removed when no birthday is stored");
   });
+
+  await test("store: name and email changes are captured before employment and contacts are overwritten; pending ids are read for the event rebuild", async () => {
+    const capture = /IF OBJECT_ID\('stage\.usp_capture_profile', 'P'\) IS NOT NULL EXEC stage\.usp_capture_profile @emp = (@\w+|NULL), @contacts = (@\w+|NULL);/;
+    const before = (q, what) => { const m = q.match(capture); assert(m, `capture call in ${what}`); assert(q.indexOf(m[0]) < q.search(what === "employment" ? /MERGE stage\.employment_current|DELETE FROM stage\.employment_current/ : /DELETE FROM stage\.employee_contact/), `capture runs first (${what})`); return [m[1], m[2]]; };
+    let p = fakePool(); let s = new SqlHubStore(p);
+    await s.upsertContacts([{ employee_id: "E1", personal_email: "a@example.com", work_email: null, work_phone: null, company_phone: null, birth_month: null, birth_day: null }], []);
+    eq(before(p.calls[0].text, "contacts"), ["NULL", "@c"]);
+    p = fakePool(); s = new SqlHubStore(p);
+    await s.upsertEmployment([{ employee_id: "E1", company_id: "SWN6T" }]);
+    eq(before(p.calls[0].text, "employment"), ["@r", "NULL"]);
+    p = fakePool(() => ({ recordset: [{ employee_id: "E1" }, { employee_id: "E7" }], recordsets: [[]] })); s = new SqlHubStore(p);
+    eq(await s.profileChangeIds(), ["E1", "E7"]);
+    assert(/IF OBJECT_ID\('stage\.profile_changes', 'U'\) IS NOT NULL/.test(p.calls[0].text) && /built_utc IS NULL/.test(p.calls[0].text), "guarded read of unbuilt changes");
+    eq(await new SqlHubStore(fakePool(() => ({}))).profileChangeIds(), [], "script 27 not run yet: nothing pending");
+  });
   await test("replaceAllContacts: INSERT + OPENJSON include birth_month / birth_day (tinyint)", async () => {
     const mssql = require("mssql"); const saved = { T: mssql.Transaction, R: mssql.Request };
     const p = fakePool(); let committed = false;

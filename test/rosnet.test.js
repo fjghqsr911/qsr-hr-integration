@@ -79,7 +79,7 @@ function fakeRosnet(opts = {}) {
                                  if (body.jobInfo.jobCode === 99999) return err(3100, SHAPES.errors.jobCodeInvalid);
                                  if (seg[1] === "removeJob") e.jobs.delete(body.jobInfo.jobCode); else e.jobs.set(body.jobInfo.jobCode, body.jobInfo.payRate); return ok(204); }
       case "updateEmployeeInfo": { const e = at(body.locationNumber); if (!e) return err(3300, "UpdateEmployeeInfo failed. The employee was not found.");     // sandbox: 400 while the profile is not there
-                                   if (body.emailId) e.email = body.emailId; return ok(204); }
+                                   if (body.emailId) e.email = body.emailId; if (body.firstName) e.first = body.firstName; if (body.lastName) e.last = body.lastName; return ok(204); }
     }
     return ok(404);
   };
@@ -248,6 +248,30 @@ module.exports = async () => {
   });
 
   // ---------------------------------------------------------------- connector ----------------------------------------------------------------
+  await test("rosnet mapper: a name or email change = updateEmployeeInfo with the names and the email as they are now; other update events stay skipped", () => {
+    const o = planOf(ctxOf("update", "Name change"));
+    eq([o.decision, o.plan.operation, o.plan.steps.map(s => `${s.method} ${s.path}`)], ["send", "profile", [`GET /Employee/getEmployee/${UID}/6000`, "PUT /Employee/updateEmployeeInfo"]]);
+    const b = o.plan.steps[1].body;
+    eq([b.firstName, b.lastName, b.emailId, b.locationNumber, b.clientCode, b.posProvider_EmployeeUID, b.updateDate], ["Dana", "ONeil", "dana@example.com", 6000, "QUICKWEN", UID, "$now"]);
+    eq(mapper.redactForStore(o.plan.steps)[1].body.emailId, "***@***", "email masked in the stored copy");
+    assert(!("emailId" in planOf(ctxOf("update", "Email change"), { ...SENS, email: null }).plan.steps[1].body), "no email in UKG: the field is left out, never blanked");
+    eq([mapper.sensitiveNeeds(ctxOf("update", "Name change")), mapper.sensitiveNeeds(ctxOf("update", "Part-time to full-time"))], [["person"], []]);
+    eq(planOf(ctxOf("update", "Part-time to full-time")).decision, "skipped");
+  });
+
+  await test("rosnet connector: name / email change -> updateEmployeeInfo at the store, found by UID; terminated -> nothing; no profile yet -> retry", async () => {
+    let s = setup(); s.srv.add(UID, 6000, { first: "Dan", last: "Oneill" });
+    let r = await send(s.connector, ctxOf("update", "Name change"));
+    eq(s.srv.writes(), ["PUT /Employee/updateEmployeeInfo"]);
+    eq([s.srv.at(UID, 6000).first, s.srv.at(UID, 6000).last, s.srv.at(UID, 6000).email, r.responseRef, r.warning], ["Dana", "ONeil", "dana@example.com", "profile:6000", undefined]);
+    eq(s.srv.calls.some(c => c.path.includes("getEmployeeByName")), false, "never searched by name");
+    s = setup(); s.srv.add(UID, 6000, { active: false, lastDay: "2026-10-01" });
+    r = await send(s.connector, ctxOf("update", "Email change"));
+    eq([s.srv.writes(), /terminated/.test(r.warning)], [[], true]);
+    s = setup();
+    await rejects(send(s.connector, ctxOf("update", "Name change")), x => x.kind === "retry" && /no profile at Rosnet location 6000/.test(x.message), "retry");
+  });
+
   await test("rosnet connector: hire with no profile at the location -> addEmployee with the send-time stamps; xref created; nothing read back", async () => {
     const { srv, connector } = setup();
     const r = await send(connector, ctxOf("create", "New hire"));

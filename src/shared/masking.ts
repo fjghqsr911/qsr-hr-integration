@@ -19,7 +19,13 @@ function redact(value: unknown, maskPay: boolean): unknown {
   const walk = (v: any, key: string | null): any => {
     if (v === null || v === undefined) return v;
     if (Array.isArray(v)) return v.map(x => walk(x, key));
-    if (typeof v === "object") { const o: Record<string, unknown> = {}; for (const k of Object.keys(v)) o[k] = walk(v[k], k.toLowerCase()); return o; }
+    if (typeof v === "object") {
+      // a JSON patch operation ({ op, path: "email", value }): the value is masked by what its path names
+      const patched = typeof v.path === "string" && "value" in v ? v.path.replace(/^\//, "").toLowerCase() : null;
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(v)) o[k] = walk(v[k], k === "value" && patched ? patched : k.toLowerCase());
+      return o;
+    }
     if (key && SIN_KEYS.has(key)) return SIN_MASK;
     if (key && DOB_KEYS.has(key)) return DOB_MASK;
     if (key && EMAIL_KEYS.has(key)) return EMAIL_MASK;

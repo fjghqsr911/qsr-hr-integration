@@ -39,10 +39,13 @@ const toInt = (v: string, what: string): number => {
 };
 
 // ---------------------------------------------------------------- helpers ----------------------------------------------------------------
+import { PROFILE_EVENTS } from "../delivery";
+
 export function sensitiveNeeds(ctx: DeliveryContext): SensitiveNeed[] {
   switch (ctx.delivery.action) {
     case "create": return ctx.xref ? ["pay"] : ["person", "pay"];
     case "pay": return ["pay"];
+    case "update": return PROFILE_EVENTS.has(ctx.delivery.eventType) ? ["person"] : [];       // the email
     default: return [];
   }
 }
@@ -196,6 +199,17 @@ export function plan(ctx: DeliveryContext, sensitive: Sensitive, cfg: MapperConf
       return done("pay", payload);
     }
     case "update": {
+      if (PROFILE_EVENTS.has(ev.eventType)) {
+        // a name or the email changed in UKG after the hire: the names and the email as they are now, in one patch
+        // (PATCH /employee/{id} takes the Employee.EmployeeUpdate attributes: firstName, lastName, preferredFirstName, email)
+        const first = (emp.firstName ?? "").trim(), last = (emp.lastName ?? "").trim(), email = (sensitive.email ?? "").trim();
+        if (!first || !last) throw new MappingError("first or last name missing in UKG");
+        const payload = [{ op: "replace", path: "firstName", value: first }, { op: "replace", path: "lastName", value: last },
+                         { op: "replace", path: "preferredFirstName", value: (emp.preferredName ?? "").trim() || null },
+                         ...(email ? [{ op: "replace", path: "email", value: email }] : [])];      // no email in UKG: Clearview keeps what it has
+        steps.push({ method: "PATCH", path: `/employee/${ref}`, body: payload });
+        return done("update", payload);
+      }
       const ft = up(emp.fullOrPartTime) === "F" || ev.eventType === "Part-time to full-time";
       const payload = [{ op: "replace", path: "empCatCode", value: ft ? "FullTime" : "PartTime" }];
       steps.push({ method: "PATCH", path: `/employee/${ref}`, body: payload });

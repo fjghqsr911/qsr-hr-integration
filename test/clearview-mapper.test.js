@@ -201,5 +201,18 @@ module.exports = async () => {
     eq(plan(ctxFrom(u, { delivery: { eventType: "Full-time to part-time" }, event: { eventType: "Full-time to part-time" }, employment: { fullOrPartTime: "P" } }), u.sensitive).plan.payload[0].value, "PartTime");
   });
 
+  await test("mapper: a name or email change patches the names and the email as they are now; the email is masked in both derived copies", () => {
+    const u = byOp.update;
+    const c = ctxFrom(u, { delivery: { eventType: "Name change" }, event: { eventType: "Name change" }, employment: { firstName: " Ann ", preferredName: "Annie", lastName: "Example-Smith" } });
+    const p = plan(c, { ...u.sensitive, email: "ann@example.com" }).plan;
+    eq(p.payload, [{ op: "replace", path: "firstName", value: "Ann" }, { op: "replace", path: "lastName", value: "Example-Smith" },
+                   { op: "replace", path: "preferredFirstName", value: "Annie" }, { op: "replace", path: "email", value: "ann@example.com" }]);
+    eq(p.operation, "update"); assert(p.steps.some(x => x.method === "PATCH"), "one PATCH");
+    eq([redactForStore(p.payload)[3].value, redactForHash(p.payload)[3].value, redactForStore(p.payload)[0].value, redactForStore(p.payload)[3].path], [EMAIL_MASK, EMAIL_MASK, "Ann", "email"]);
+    const none = plan(ctxFrom(u, { delivery: { eventType: "Email change" }, event: { eventType: "Email change" }, employment: { preferredName: null } }), { ...u.sensitive, email: null }).plan.payload;
+    eq([none.length, none[2]], [3, { op: "replace", path: "preferredFirstName", value: null }], "no email in UKG: left alone; no preferred name: cleared");
+    eq([sensitiveNeeds(c), sensitiveNeeds(ctxFrom(u))], [["person"], []]);
+  });
+
   report("clearview mapper");
 };

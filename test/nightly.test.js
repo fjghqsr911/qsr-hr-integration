@@ -40,6 +40,7 @@ module.exports = async () => {
           job_code: r.job_code, full_or_part_time: r.full_or_part_time })));
       },
       async rebuildEvents(ids) { s.rebuilt.push(...ids); return ids.length; },
+      async profileChangeIds() { return s.profiles ?? []; },
       async replaceAllContacts() {},
       async purge() { return 0; },
       async hoursSinceIntradaySuccess() { return 3; }
@@ -82,6 +83,13 @@ module.exports = async () => {
     eq(s.replaced, ["E2"], "full refresh"); eq(s.rebuilt, ["E2"], "events rebuilt");
     eq(s.upserted, ["E1"], "the refreshed employee is not upserted from the nightly page");
     eq(s.db.find(x => x.employee_id === "E2").org_level2, "T00037", "new store stored");
+  });
+
+  await test("runNightly: employees whose name or email changed (recorded by the writes) get their events built, even with no other change", async () => {
+    const s = store([row("E1"), row("E2")]); s.profiles = ["E1"];
+    const r = await runNightly(s, ukg([ukgEmp("E1"), ukgEmp("E2")]), { lookbackMonths: 24, contacts, now });
+    eq([r.status, r.employeesChanged], ["succeeded", 0]);
+    eq([s.replaced, s.rebuilt], [[], ["E1"]], "no refresh needed, but the profile change becomes an event");
   });
 
   await test("runNightly: a never-seen employee is refreshed (decided before the upsert adds them)", async () => {
