@@ -21,7 +21,7 @@ const NO_STORE = { "Cache-Control": "no-store", "Pragma": "no-cache" };
 const errText = (e: any) => String(e?.message ?? "error").replace(/\?.*$/, "").slice(0, 200);
 
 app.timer("rosnetConnectorTimer", {
-  schedule: "0 45 * * * *",             // :45 keeps clear of the syncs (:05, :15) and of the Clearview timer (:30)
+  schedule: "0 45 * * * *",             // :45 keeps clear of the syncs (:50, :15) and of the Clearview timer (:30); a run still going at :50 only makes the after-sync run skip (lock per destination)
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.rosnetEnabled) { ctx.log("[rosnet] disabled (ROSNET_ENABLED is not 'true') - skipping"); return; }
     await runConnector("rosnet", ctx, "timer");

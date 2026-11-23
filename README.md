@@ -58,7 +58,7 @@ user endpoints.
 
 | Function | Trigger | What it does |
 |---|---|---|
-| `hubSyncTimer` | Timer, 10:05 / 14:05 / 18:05 / 22:05 **UTC** (6/10/14/18 ET in summer, one hour earlier in winter) | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
+| `hubSyncTimer` | Timer, 09:50 / 12:50 / 15:50 / 18:50 / 21:50 **UTC** (4:50 / 7:50 / 10:50 / 13:50 / 16:50 Toronto in winter, one hour later in summer): 10 minutes before Flexspring's Clearview runs at 5, 8, 11 and 14 Toronto time. The monitor's `SYNC_HOURS_UTC` / `SYNC_MINUTE_UTC` must match | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
 | `clearviewConnectorTimer` | Timer, hourly at :30 | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. The timer is for retries, waiting deliveries and manual retries / queued events; new events do not wait for it, because the connector also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) and nightly (`hubNightlyTimer` / `hubNightlyRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |

@@ -21,7 +21,7 @@ const NO_STORE = { "Cache-Control": "no-store", "Pragma": "no-cache" };
 const errText = (e: any) => String(e?.message ?? "error").replace(/\?.*$/, "").slice(0, 200);
 
 app.timer("clearviewConnectorTimer", {
-  schedule: "0 30 * * * *",             // :30 keeps clear of the syncs at :05 (intraday) and :15 (nightly), each of which runs the connector itself
+  schedule: "0 30 * * * *",             // :30 keeps clear of the syncs at :50 (intraday) and :15 (nightly), each of which runs the connector itself
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.clearviewEnabled) { ctx.log("[clearview] disabled (CLEARVIEW_ENABLED is not 'true') - skipping"); return; }
     await runConnector("clearview", ctx, "timer");

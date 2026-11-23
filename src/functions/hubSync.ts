@@ -55,10 +55,13 @@ export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string
   return result;
 }
 
-// ---- Scheduled: 4x daily. Times are UTC (Flex Consumption):
-//      10:05, 14:05, 18:05, 22:05 UTC = 6/10/14/18 ET in summer (EDT), one hour earlier in winter (EST).
+// ---- Scheduled: 5x daily. Times are UTC (Flex Consumption has no time zone setting):
+//      09:50, 12:50, 15:50, 18:50, 21:50 UTC = 4:50, 7:50, 10:50, 13:50, 16:50 Toronto in winter (EST), one hour later
+//      in summer (EDT). Chosen 2026-11-23 to run 10 minutes BEFORE Flexspring, which sends to Clearview at 5:00, 8:00,
+//      11:00 and 14:00 Toronto time, so that during the parallel run our connector is the first to write. When the
+//      clocks change the runs fall 50 minutes AFTER Flexspring unless the hours are moved one earlier.
 app.timer("hubSyncTimer", {
-  schedule: "0 5 10,14,18,22 * * *",
+  schedule: "0 50 9,12,15,18,21 * * *",
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-sync] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
     await runSyncThenDeliver(ctx, "timer");
