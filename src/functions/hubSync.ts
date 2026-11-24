@@ -13,6 +13,7 @@ const contactConfig = (): ContactConfig => ({
 import { authorize, describeCaller, Roles, Scopes } from "../shared/auth";
 import { enabledDestinations, runConnector } from "../shared/connectors";
 import { runEntraSyncJob } from "../shared/entra/runner";
+import { HUB_SYNC_CRON, HUB_NIGHTLY_CRON } from "../shared/schedules";
 
 const ukgSource: UkgSource = { getAll: (path, perPage) => ukgGetAll(path, perPage, 500) };
 
@@ -61,7 +62,7 @@ export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string
 //      11:00 and 14:00 Toronto time, so that during the parallel run our connector is the first to write. When the
 //      clocks change the runs fall 50 minutes AFTER Flexspring unless the hours are moved one earlier.
 app.timer("hubSyncTimer", {
-  schedule: "0 50 9,12,15,18,21 * * *",
+  schedule: HUB_SYNC_CRON,              // "0 50 9,12,15,18,21 * * *" (src/shared/schedules.ts)
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-sync] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
     await runSyncThenDeliver(ctx, "timer");
@@ -114,7 +115,7 @@ export async function runNightlyThenDeliver(ctx: InvocationContext, trigger: str
 
 // 06:15 UTC = 2:15 AM Toronto in summer (EDT), 1:15 AM in winter (EST).
 app.timer("hubNightlyTimer", {
-  schedule: "0 15 6 * * *",
+  schedule: HUB_NIGHTLY_CRON,           // "0 15 6 * * *"
   handler: async (_t: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-nightly] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
     await runNightlyThenDeliver(ctx, "timer");

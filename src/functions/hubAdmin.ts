@@ -6,7 +6,7 @@ import { writeAudit } from "../shared/audit";
 // Admin actions for the delivery queue (used by the read-only monitor UI, which never writes to the database itself).
 //
 //   PUT  /api/hub/stores/{destination}/{store}/mode   { "mode": "off" | "shadow" | "live" }   upsert ref.store_modes
-//   POST /api/hub/deliveries/{id}/retry                failed / dead -> pending, next attempt now (attempts kept)
+//   POST /api/hub/deliveries/{id}/retry                failed / dead / waiting -> pending, next attempt now (attempts kept)
 //   POST /api/hub/deliveries/{id}/resolve              review | dead -> resolved (a dead delivery blocks the employee's later ones until resolved or retried)
 //
 // All three: scope Employees.Summary.Write + role Summary.Admin (same pair as /api/hub/sync). No app-only callers.
@@ -46,7 +46,7 @@ export const DELIVERY_SELECT_SQL = `SELECT ${DELIVERY_COLUMNS} FROM [out].delive
 export const DELIVERY_RETRY_SQL = `
 UPDATE [out].deliveries SET status = 'pending', next_attempt_utc = SYSUTCDATETIME()
 OUTPUT ${DELIVERY_COLUMNS.replace(/(\w+)/g, "inserted.$1")}
-WHERE delivery_id = @id AND status IN ('failed', 'dead');`;
+WHERE delivery_id = @id AND status IN ('failed', 'dead', 'waiting');`;
 
 export const DELIVERY_RESOLVE_SQL = `
 UPDATE [out].deliveries SET status = 'resolved', finished_utc = SYSUTCDATETIME()
@@ -178,7 +178,7 @@ export async function hubEventsQueue(req: HttpRequest, ctx: InvocationContext): 
 // ---------------------------------------------------------------- deliveries ----------------------------------------------------------------
 interface Transition { endpoint: string; label: string; from: readonly string[]; sql: string; }
 
-const RETRY: Transition = { endpoint: "POST /hub/deliveries/{id}/retry", label: "retry", from: ["failed", "dead"], sql: DELIVERY_RETRY_SQL };
+const RETRY: Transition = { endpoint: "POST /hub/deliveries/{id}/retry", label: "retry", from: ["failed", "dead", "waiting"], sql: DELIVERY_RETRY_SQL };
 const RESOLVE: Transition = { endpoint: "POST /hub/deliveries/{id}/resolve", label: "resolve", from: ["review", "dead"], sql: DELIVERY_RESOLVE_SQL };
 
 async function deliveryTransition(req: HttpRequest, ctx: InvocationContext, t: Transition): Promise<HttpResponseInit> {

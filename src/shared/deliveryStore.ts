@@ -84,6 +84,11 @@ USING (SELECT @destination AS destination, @employeeId AS employee_id, @operatio
 WHEN MATCHED THEN UPDATE SET payload_hash = @hash, sent_utc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT (destination, employee_id, operation, payload_hash, sent_utc) VALUES (@destination, @employeeId, @operation, @hash, SYSUTCDATETIME());`;
 
+/** One masked payload copy per delivery (shadow and, since 2026-11-24, live): replace whatever is there. */
+export const PAYLOAD_UPSERT_SQL = `
+DELETE FROM [out].shadow_payloads WHERE delivery_id = @id;
+INSERT INTO [out].shadow_payloads (delivery_id, payload, built_utc) VALUES (@id, @payload, SYSUTCDATETIME());`;
+
 export const PURGE_SHADOW_SQL = `
 DELETE TOP (5000) p FROM [out].shadow_payloads p
 JOIN [out].deliveries d ON d.delivery_id = p.delivery_id
@@ -203,10 +208,14 @@ export class SqlDeliveryStore implements DeliveryStore {
         .input("ref", sql.NVarChar(64), `shadow:${operation}`).query(`
         UPDATE [out].deliveries SET status = 'shadow', mode_at_send = 'shadow', payload_hash = @hash, finished_utc = SYSUTCDATETIME(), last_error = NULL,
                response_ref = @ref WHERE delivery_id = @id;
-        DELETE FROM [out].shadow_payloads WHERE delivery_id = @id;
-        INSERT INTO [out].shadow_payloads (delivery_id, payload, built_utc) VALUES (@id, @payload, SYSUTCDATETIME());`);
+        ${PAYLOAD_UPSERT_SQL}`);
       await tx.commit();
     } catch (e) { await tx.rollback().catch(() => {}); throw e; }
+  }
+
+  async savePayload(id: number, storedPayload: string): Promise<void> {
+    await this.update(id).input("payload", sql.NVarChar(sql.MAX), storedPayload)
+      .query(`SET XACT_ABORT ON; BEGIN TRANSACTION; ${PAYLOAD_UPSERT_SQL} COMMIT TRANSACTION;`);
   }
 
   async markSent(id: number, hash: Buffer, operation: string, responseRef: string | null, warning: string | null): Promise<void> {

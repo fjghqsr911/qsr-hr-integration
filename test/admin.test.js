@@ -128,7 +128,7 @@ module.exports = async () => {
   /** Pool whose SELECT returns `row` and whose UPDATE returns the row with the new status only when the rule allows it. */
   const deliveryPool = (row, after = {}) => fakePool((text) => {
     if (/^SELECT/.test(text.trim())) return { recordset: row ? [row] : [] };
-    if (text === DELIVERY_RETRY_SQL)   return { recordset: row && ["failed", "dead"].includes(row.status) ? [{ ...row, status: "pending", next_attempt_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
+    if (text === DELIVERY_RETRY_SQL)   return { recordset: row && ["failed", "dead", "waiting"].includes(row.status) ? [{ ...row, status: "pending", next_attempt_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
     if (text === DELIVERY_RESOLVE_SQL) return { recordset: row && ["review", "dead"].includes(row.status) ? [{ ...row, status: "resolved", finished_utc: new Date("2026-10-30T12:00:00Z"), ...after }] : [] };
     throw new Error(`unexpected SQL: ${text}`);
   });
@@ -154,14 +154,17 @@ module.exports = async () => {
        [42, "pending", 3, "2026-10-30T12:00:00.000Z", "E123"]);
     eq(pool.calls.map(c => c.inputs.id), [42, 42]);
     assert(/SET status = 'pending', next_attempt_utc = SYSUTCDATETIME\(\)/.test(DELIVERY_RETRY_SQL) && !/attempts/.test(DELIVERY_RETRY_SQL.split("OUTPUT")[0]));
-    assert(/status IN \('failed', 'dead'\)/.test(DELIVERY_RETRY_SQL), "the update itself must re-check the status");
+    assert(/status IN \('failed', 'dead', 'waiting'\)/.test(DELIVERY_RETRY_SQL), "the update itself must re-check the status");
     eq(audits.length, 1);
     eq([audits[0].endpoint, audits[0].employeeId, audits[0].action, audits[0].fields, audits[0].outcome],
        ["POST /hub/deliveries/{id}/retry", "E123", "write", ["status"], "allowed"]);
   });
-  await test("retry: dead -> pending; other statuses -> 409 with no audit and no update", async () => {
-    reset(); pool = deliveryPool(delivery({ status: "dead" }));
-    eq((await hubDeliveryRetry(req(admin, { id: "42" }), ctx)).jsonBody.status, "pending");
+  await test("retry: dead or waiting -> pending; other statuses -> 409 with no audit and no update", async () => {
+    for (const status of ["dead", "waiting"]) {
+      reset(); pool = deliveryPool(delivery({ status }));
+      eq((await hubDeliveryRetry(req(admin, { id: "42" }), ctx)).jsonBody.status, "pending", `retry of ${status}`);
+      eq(audits.length, 1);
+    }
     for (const status of ["pending", "sent", "shadow", "review", "resolved", "superseded", "unchanged"]) {
       reset(); pool = deliveryPool(delivery({ status }));
       const res = await hubDeliveryRetry(req(admin, { id: "42" }), ctx);

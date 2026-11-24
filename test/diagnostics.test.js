@@ -89,7 +89,13 @@ module.exports = async () => {
       eq(res.status, 200); eq(res.headers["Cache-Control"], "no-store");
       const b = res.jsonBody;
       assert(typeof b.checkedUtc === "string" && !Number.isNaN(Date.parse(b.checkedUtc)), "checkedUtc");
-      eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "entra", "grants", "settings", "sql", "sync", "ukg"]);
+      eq(Object.keys(b).sort(), ["audit", "caller", "checkedUtc", "destinations", "entra", "grants", "schedule", "settings", "sql", "sync", "ukg"]);
+      // the deployed timer times, for the monitor to compare with its own SYNC_HOURS_UTC / SYNC_MINUTE_UTC / NIGHTLY_UTC
+      const { HUB_SYNC_CRON, HUB_NIGHTLY_CRON, hubSchedule, parseDailyCron } = require(path.join(DIST, "shared", "schedules.js"));
+      eq(b.schedule, hubSchedule()); eq(b.schedule, { syncHoursUtc: [9, 12, 15, 18, 21], syncMinuteUtc: 50, nightlyUtc: "06:15" });
+      eq([HUB_SYNC_CRON, HUB_NIGHTLY_CRON], ["0 50 9,12,15,18,21 * * *", "0 15 6 * * *"]);
+      eq(parseDailyCron("0 5 10,14 * * *"), { minute: 5, hours: [10, 14] });
+      eq([parseDailyCron("0 */5 * * * *"), parseDailyCron("0 61 3 * * *"), hubSchedule("0 50 9 * * *", "0 15 6,7 * * *")], [null, null, null]);
       eq(COMPONENTS.map(c => b[c].status), COMPONENTS.map(() => "pass"));
       eq(b.destinations.map(d => d.name), ["clearview", "rosnet"]);
       eq(b.caller, { status: "pass", kind: "delegated", clientAppId: "monitor-app", clientAllowed: true });

@@ -124,6 +124,8 @@ export interface DeliveryStore {
   claim(destination: string, limit: number): Promise<ClaimedDelivery[]>;
   loadContext(delivery: ClaimedDelivery): Promise<DeliveryContext>;
   markShadow(deliveryId: number, hash: Buffer, storedPayload: string, operation: string): Promise<void>;
+  /** The masked copy of what a live delivery built, kept where the shadow copies are (same retention). */
+  savePayload(deliveryId: number, storedPayload: string): Promise<void>;
   markSent(deliveryId: number, hash: Buffer, operation: string, responseRef: string | null, warning: string | null): Promise<void>;
   markUnchanged(deliveryId: number, hash: Buffer): Promise<void>;
   markFailed(deliveryId: number, attempts: number, nextAttemptUtc: Date, error: string): Promise<void>;
@@ -247,12 +249,17 @@ export async function runDeliveries(store: DeliveryStore, connector: Connector, 
 
         const plan = outcome.plan;
         const hash = payloadHash(connector.redactForHash(plan.payload));
+        const storedCopy = (mode: "shadow" | "live") =>
+          JSON.stringify({ operation: plan.operation, mode, steps: connector.redactForStore(plan.steps), payload: connector.redactForStore(plan.payload) });
         if (!live) {
-          const stored = JSON.stringify({ operation: plan.operation, mode: "shadow", steps: connector.redactForStore(plan.steps), payload: connector.redactForStore(plan.payload) });
-          await store.markShadow(d.deliveryId, hash, stored, plan.operation);
+          await store.markShadow(d.deliveryId, hash, storedCopy("shadow"), plan.operation);
           r.shadow++;
           continue;
         }
+        // live: keep the same masked copy a shadow run keeps, saved BEFORE the send so a sent, unchanged, failed, dead or
+        // waiting delivery all show what was built. The copy is for people to read: failing to save it never stops the send.
+        try { await store.savePayload(d.deliveryId, storedCopy("live")); }
+        catch (e: any) { warn(`${destination}: payload copy not saved for delivery ${d.deliveryId}: ${errorText(e)}`); }
         const previous = ctx.lastSent.get(plan.operation);
         if (previous && previous.equals(hash)) { await store.markUnchanged(d.deliveryId, hash); r.unchanged++; continue; }
 

@@ -6,6 +6,7 @@ import { ukgGet, UkgError } from "../shared/ukg";
 import { probeAudit } from "../shared/audit";
 import { buildClearviewClient, buildRosnetClient, clearviewCredentials, rosnetCredentials } from "../shared/connectors";
 import { STATS_SQL } from "../shared/deliveryStore";
+import { hubSchedule } from "../shared/schedules";
 import { buildGraphClient } from "../shared/graph";
 import { torontoToday } from "../shared/entra/compare";
 
@@ -363,6 +364,7 @@ export async function hubDiagnostics(req: HttpRequest, ctx: InvocationContext): 
   const body = {
     checkedUtc: new Date().toISOString(),
     caller: callerStatus, settings, sql, grants, audit, ukg, sync, entra,
+    schedule: hubSchedule(),          // the deployed timer times, for the monitor to compare with its own settings
     destinations: [{ name: "clearview", ...clearview }, { name: "rosnet", ...rosnet }] as Component[]
   };
   const statuses = [callerStatus, settings, sql, grants, audit, ukg, sync].map(c => c.status);

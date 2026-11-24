@@ -9,7 +9,7 @@ const NOW = new Date("2026-11-02T15:00:00Z");
 module.exports = async () => {
   const { runDeliveries, RETRY_DELAYS_MS, WAITING_DELAY_MS, MappingError, DeliveryError, canonicalJson, payloadHash, orderDeliveries, pickEmployment, codeKey, findCode } =
     require(path.join(DIST, "shared", "delivery.js"));
-  const { SqlDeliveryStore, CLAIM_SQL, CONTEXT_SQL, STATS_SQL, PENDING_CREATES_SQL, PURGE_SHADOW_SQL, mapCodeRows, mapClaimedRow } =
+  const { SqlDeliveryStore, CLAIM_SQL, CONTEXT_SQL, STATS_SQL, PENDING_CREATES_SQL, PURGE_SHADOW_SQL, PAYLOAD_UPSERT_SQL, mapCodeRows, mapClaimedRow } =
     require(path.join(DIST, "shared", "deliveryStore.js"));
 
   // ---------------------------------------------------------------- fakes ----------------------------------------------------------------
@@ -19,7 +19,7 @@ module.exports = async () => {
   /** In-memory store: rows change status like SQL would; the claim applies the blocking rule and ordering. */
   function fakeStore(rows, opts = {}) {
     const s = {
-      rows, runs: [], shadow: new Map(), lastSent: new Map(), xref: new Map(Object.entries(opts.xref ?? {})), purged: 0, running: !!opts.running,
+      rows, runs: [], shadow: new Map(), payloads: new Map(), lastSent: new Map(), xref: new Map(Object.entries(opts.xref ?? {})), purged: 0, running: !!opts.running,
       modes: opts.modes ?? { T22446: "live" }, employment: opts.employment, event: opts.event, codes: opts.codes,
       async isRunning() { return s.running; },
       async startRun() { s.runs.push({ status: "running" }); return "run-1"; },
@@ -41,6 +41,7 @@ module.exports = async () => {
       },
       find(id) { return s.rows.find(r => r.deliveryId === id); },
       async markShadow(id, hash, stored, operation) { Object.assign(s.find(id), { status: "shadow", hash, modeAtSend: "shadow", responseRef: `shadow:${operation}` }); s.shadow.set(id, stored); },
+      async savePayload(id, stored) { if (opts.savePayloadFails) throw new Error("payload table unavailable"); s.payloads.set(id, { stored, statusWhenSaved: s.find(id).status }); },
       async markSent(id, hash, operation, responseRef, warning) { const r = s.find(id); Object.assign(r, { status: "sent", hash, modeAtSend: "live", attempts: r.attempts + 1, responseRef, lastError: warning }); s.lastSent.set(`${r.employeeId}|${operation}`, hash); },
       async markUnchanged(id, hash) { Object.assign(s.find(id), { status: "unchanged", hash, modeAtSend: "live" }); },
       async markFailed(id, attempts, next, error) { Object.assign(s.find(id), { status: "failed", attempts, nextAttemptUtc: next, lastError: error }); },
@@ -137,6 +138,46 @@ module.exports = async () => {
     const u = ukg(); u.pay = async () => ({ salaryOrHourly: "H", hourlyPayRate: 19, annualSalary: null });
     const third = await run(store, c, u);
     eq([third.r.sent, third.r.unchanged], [1, 0]); eq(c.executed.length, 2);
+  });
+
+  await test("runner: live keeps a masked copy (mode live) saved BEFORE the send: sent, unchanged, failed and waiting all have one; shadow is unchanged", async () => {
+    const store = fakeStore([row(1)]);
+    const c = fakeConnector();
+    await run(store, c);
+    const saved = store.payloads.get(1);
+    eq(saved.statusWhenSaved, "pending", "saved before execute changed the status");
+    const copy = JSON.parse(saved.stored);
+    eq([copy.operation, copy.mode, copy.payload.sin, copy.payload.payRate, copy.payload.birthDate], ["pay", "live", "*********", "***", "****-**-**"]);
+    assert(!saved.stored.includes(SIN) && !saved.stored.includes("17.5"), "no SIN digits, no pay in the stored copy");
+    eq(copy.steps[0].body.sin, "*********");
+    store.rows.push(row(2));                                              // same payload again -> unchanged, still with a copy
+    await run(store, c);
+    eq(store.find(2).status, "unchanged"); assert(store.payloads.has(2), "an unchanged delivery shows what was built");
+    for (const [kind, status] of [["retry", "failed"], ["waiting", "waiting"], ["dead", "dead"]]) {
+      const s2 = fakeStore([row(1)]);
+      await run(s2, fakeConnector({ execute: async () => { throw new DeliveryError(kind, "boom"); } }));
+      eq(s2.find(1).status, status); eq(JSON.parse(s2.payloads.get(1).stored).mode, "live", `${status} keeps its copy`);
+    }
+    const shadow = fakeStore([row(1)], { modes: { T22446: "shadow" } });
+    await run(shadow, fakeConnector());
+    eq(shadow.payloads.size, 0, "shadow goes through markShadow only"); eq(JSON.parse(shadow.shadow.get(1)).mode, "shadow");
+  });
+
+  await test("runner: a payload copy that cannot be saved is a warning only: the delivery is still sent", async () => {
+    const store = fakeStore([row(1)], { savePayloadFails: true });
+    const c = fakeConnector();
+    const { r, logs: l } = await run(store, c);
+    eq([r.status, r.sent, r.failed], ["succeeded", 1, 0]); eq(store.find(1).status, "sent"); eq(c.executed.length, 1);
+    assert(l.some(m => m.startsWith("WARN clearview: payload copy not saved for delivery 1")), l.join("\n"));
+  });
+
+  await test("store SQL: savePayload replaces the delivery's copy in one transaction, with the id and the payload only", async () => {
+    const pool = fakePool(() => ({ recordset: [] }));
+    await new SqlDeliveryStore(pool, "clearview").savePayload(9, '{"mode":"live"}');
+    const call = pool.calls[pool.calls.length - 1];
+    assert(call.text.includes(PAYLOAD_UPSERT_SQL) && /BEGIN TRANSACTION/.test(call.text) && /COMMIT TRANSACTION/.test(call.text), call.text);
+    assert(/DELETE FROM \[out\]\.shadow_payloads WHERE delivery_id = @id/.test(PAYLOAD_UPSERT_SQL) && /INSERT INTO \[out\]\.shadow_payloads/.test(PAYLOAD_UPSERT_SQL));
+    eq(call.inputs, { id: 9, payload: '{"mode":"live"}' });
   });
 
   await test("runner: retry schedule 5m / 30m / 2h / 12h then dead on the 5th failure, with the exact dead log line", async () => {
