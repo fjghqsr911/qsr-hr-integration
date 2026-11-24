@@ -226,7 +226,7 @@ module.exports = async () => {
 
   await test("connector: job - target already on file -> PUT primary; else POST with the current primary rate; old primary demoted; already primary -> no write", async () => {
     const payload = { add: { jobCode: 10, jobStatus: "A", primaryJob: true, payTypeCode: "$lookup:currentPrimaryPayType", payRate: "$lookup:currentPrimaryRate", effectiveDate: "2026-11-01" }, promote: { jobId: 9444, primaryJob: true, jobStatus: "A" }, demote: { jobId: "$lookup:primaryJobId", primaryJob: false, jobStatus: "I" } };
-    const jobs = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2025-01-01", payRate: 16, payType: "Hourly" }, { payId: 2, effectiveDate: "2026-06-01", payRate: 17.5, payType: "Hourly" }, { payId: 3, effectiveDate: "2099-01-01", payRate: 99, payType: "Salary" }] }];
+    const jobs = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: [{ payId: 1, effectiveDate: "2025-01-01", payRate: 16, payType: "Hourly" }, { payId: 2, effectiveDate: "2026-06-01", payRate: 17.5, payType: "Hourly" }, { payId: 3, effectiveDate: "2099-01-01", payRate: 99, payType: "Salary" }] }];
     let f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, jobs], "POST /api/v2/employeeJob/55501/job": [200, [...jobs, { jobId: 9444, jobCode: 10 }]], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     let r = await connector(f).execute(planOf("job", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501", "POST /employeeJob/55501/job", "PUT /employeeJob/55501/job/9441"]);
@@ -236,28 +236,28 @@ module.exports = async () => {
     eq(currentRate(jobs[0]), 17.5); eq(currentRate({ payRates: [] }), 0); eq(currentPay(jobs[0]), { payRate: 17.5, payTypeCode: "H" });
     eq(["Hourly", "hourly", "H", "Salary", "Salaried", "S", "", null, "Piece"].map(normalizePayType), ["H", "H", "H", "S", "S", "S", null, null, null]);
     // salaried primary: the new job is salaried too, with salaryHours 40
-    const salaried = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 52000, payType: "Salaried" }] }];
+    const salaried = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 52000, payType: "Salaried" }] }];
     f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, salaried], "POST /api/v2/employeeJob/55501/job": [200, [{ jobId: 9444, jobCode: 10 }]], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     await connector(f).execute(planOf("job", payload), ctxFor());
     eq(f.calls[1].body, { jobCode: 10, jobStatus: "A", primaryJob: true, payTypeCode: "S", payRate: 52000, effectiveDate: "2026-11-01", salaryHours: 40 });
-    const untyped = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 20 }] }];
+    const untyped = [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 20 }] }];
     f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, untyped], "POST /api/v2/employeeJob/55501/job": [200, []], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     await connector(f).execute(planOf("job", payload), ctxFor());
     eq(f.calls[1].body.payTypeCode, null, "unknown pay type is sent as null, never guessed");
-    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [...jobs, { jobId: 9444, jobCode: 10, jobStatus: "I", primary: false }]], "PUT /api/v2/employeeJob/55501/job/9444": [200, {}], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
+    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [...jobs, { jobId: 9444, jobCode: 10, jobStatus: "I", primaryJob: false }]], "PUT /api/v2/employeeJob/55501/job/9444": [200, {}], "PUT /api/v2/employeeJob/55501/job/9441": [200, {}] });
     r = await connector(f).execute(planOf("job", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501", "PUT /employeeJob/55501/job/9444", "PUT /employeeJob/55501/job/9441"]); eq(f.calls[1].body, { primaryJob: true, jobStatus: "A" });
-    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [{ jobId: 9444, jobCode: 10, jobStatus: "A", primary: true, payRates: [] }]] });
+    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [{ jobId: 9444, jobCode: 10, jobStatus: "A", primaryJob: true, payRates: [] }]] });
     r = await connector(f).execute(planOf("job", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501"]); eq(r.warning, "already the primary job in Clearview");
-    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [] }]] });
+    f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: [] }]] });
     let err = null; try { await connector(f).execute(planOf("job", payload), ctxFor()); } catch (e) { err = e; }
     eq([err.kind, err.message], ["dead", "no current primary pay rate in Clearview to carry over to the new job"]);
   });
 
   await test("connector: pay - POST on the primary job with the flat v2 body; same-date row with the same rate -> no write; different rate -> PUT", async () => {
     const payload = { effectiveDate: "2026-11-01", payTypeCode: "H", payRate: 18.25, salaryHours: null };
-    const primary = (rates) => [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: rates }, { jobId: 9442, primary: false, payRates: [] }];
+    const primary = (rates) => [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: rates }, { jobId: 9442, primaryJob: false, payRates: [] }];
     let f = fakeFetch({ "GET /api/v2/employeeJob/55501": [200, primary([{ payId: 1, effectiveDate: "2026-06-01", payRate: 17.5 }])], "POST /api/v2/employeeJob/55501/job/9441/pay": [200, { payId: 7 }] });
     let r = await connector(f).execute(planOf("pay", payload), ctxFor());
     eq(seq(f), ["GET /employeeJob/55501", "POST /employeeJob/55501/job/9441/pay"]); eq(f.calls[1].body, payload); eq(r.responseRef, "pay:7");
@@ -325,7 +325,7 @@ module.exports = async () => {
       async employeeByExternalId(co, x) { readCalls.push(`byExternalId ${x}`); return null; },
       async employeeByNumber(co, n) { readCalls.push(`byNumber ${n}`); return emp("Active"); },
       async employee(co, id) { readCalls.push(`employee ${id}`); return emp("Active"); },
-      async jobs(co, id, inactive) { readCalls.push(`jobs ${id} ${inactive}`); return [{ jobId: 9441, jobCode: 1, jobStatus: "A", primary: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 17 }] }]; },
+      async jobs(co, id, inactive) { readCalls.push(`jobs ${id} ${inactive}`); return [{ jobId: 9441, jobCode: 1, jobStatus: "A", primaryJob: true, payRates: [{ payId: 1, effectiveDate: "2026-01-01", payRate: 17 }] }]; },
       async storeAssignments(co, id, inactive) { readCalls.push(`assignments ${id} ${inactive}`); return []; },
       async organizationEmployees() { readCalls.push("organizationEmployees"); return { employees: [] }; },
       async terminationReasons() { readCalls.push("terminationReasons"); return []; }

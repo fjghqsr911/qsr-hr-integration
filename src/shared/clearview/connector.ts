@@ -39,6 +39,8 @@ export class ClearviewApiReads implements ClearviewReads {
 }
 
 const isActive = (status: unknown) => /^a/i.test(String(status ?? ""));
+/** Clearview job records carry the flag as `primaryJob` (seen live 2026-11-24: jobId, jobCode, name, jobStatus, primaryJob, payRates). */
+const isPrimary = (job: any) => job?.primaryJob === true;
 const stdOf = (detail: any) => detail?.standardInformation ?? detail ?? {};
 const idOf = (detail: any): number | null => { const id = Number(stdOf(detail)?.employeeId); return Number.isInteger(id) && id > 0 ? id : null; };
 
@@ -185,7 +187,7 @@ export class ClearviewConnector implements Connector {
     const { id, xref } = await this.resolveEmployee(company, ctx);
     const payload: any = plan.payload;
     const jobs: any[] = await this.reads.jobs(company, id, true);
-    const primary = jobs.find(j => j.primary && isActive(j.jobStatus)) ?? jobs.find(j => j.primary) ?? null;
+    const primary = jobs.find(j => isPrimary(j) && isActive(j.jobStatus)) ?? jobs.find(isPrimary) ?? null;
     const target = jobs.find(j => Number(j.jobCode) === Number(payload.add.jobCode) || (payload.promote.jobId && Number(j.jobId) === Number(payload.promote.jobId))) ?? null;
     if (target && primary && Number(target.jobId) === Number(primary.jobId) && isActive(target.jobStatus))
       return { responseRef: `job:${target.jobId}`, warning: "already the primary job in Clearview", xref };
@@ -210,7 +212,7 @@ export class ClearviewConnector implements Connector {
     const { id, xref } = await this.resolveEmployee(company, ctx);
     const payload: any = plan.payload;
     const jobs: any[] = await this.reads.jobs(company, id, false);
-    const primary = jobs.find(j => j.primary) ?? null;
+    const primary = jobs.find(isPrimary) ?? null;
     if (!primary) throw new DeliveryError("dead", "no primary job in Clearview to attach the pay change to");
     const existing = (primary.payRates ?? []).find((p: any) => String(p.effectiveDate ?? "").slice(0, 10) === payload.effectiveDate) ?? null;
     if (existing) {
