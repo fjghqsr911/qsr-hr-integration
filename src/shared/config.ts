@@ -49,6 +49,12 @@ export const config = {
   get hubSqlServer() { return required("HUB_SQL_SERVER"); },              // e.g. sql-qsr-prod-cc.database.windows.net
   get hubSqlDatabase() { return required("HUB_SQL_DATABASE"); },          // e.g. sqldb-hrint
   get hubLookbackMonths() { return parseInt(process.env.HUB_LOOKBACK_MONTHS ?? "24", 10); },
+  /** Seconds between the two reads of UKG's employee-changes feed in an intraday sync (0 = one read; at most 300).
+   *  UKG releases changes only when the feed is called and the releasing call does not get them (hubSync.ts). */
+  get hubFeedSecondReadSeconds() {
+    const n = parseInt(process.env.HUB_FEED_SECOND_READ_SECONDS ?? "90", 10);
+    return Number.isFinite(n) && n >= 0 ? Math.min(n, 300) : 90;
+  },
   /** Kill switch for the scheduled sync. Off unless explicitly "true". */
   get hubSyncEnabled() { return (process.env.HUB_SYNC_ENABLED ?? "").toLowerCase() === "true"; },
 

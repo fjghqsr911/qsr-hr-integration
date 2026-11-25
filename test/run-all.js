@@ -9,6 +9,7 @@ const { summary } = require("./helpers");
 
 (async () => {
   await require("./birthday.test.js")();
+  await require("./hubsync-feed.test.js")();
   await require("./existing.test.js")();
   await require("./nightly.test.js")();
   await require("./admin.test.js")();

@@ -58,7 +58,7 @@ user endpoints.
 
 | Function | Trigger | What it does |
 |---|---|---|
-| `hubSyncTimer` | Timer, 09:50 / 12:50 / 15:50 / 18:50 / 21:50 **UTC** (4:50 / 7:50 / 10:50 / 13:50 / 16:50 Toronto in winter, one hour later in summer): 10 minutes before Flexspring's Clearview runs at 5, 8, 11 and 14 Toronto time. The monitor's `SYNC_HOURS_UTC` / `SYNC_MINUTE_UTC` must match | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
+| `hubSyncTimer` | Timer, 10:10 / 13:10 / 16:10 / 19:10 / 22:10 **UTC** (5:10 / 8:10 / 11:10 / 14:10 / 17:10 Toronto in winter, one hour later in summer): 10 minutes after Flexspring's runs at 5, 8, 11 and 14 Toronto time release UKG's change feed, plus a late-afternoon run that releases it itself (see below). The monitor's `SYNC_HOURS_UTC` / `SYNC_MINUTE_UTC` must match | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
 | `clearviewConnectorTimer` | Timer, hourly at :30 | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. The timer is for retries, waiting deliveries and manual retries / queued events; new events do not wait for it, because the connector also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) and nightly (`hubNightlyTimer` / `hubNightlyRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |
@@ -71,6 +71,17 @@ Each run: window = end of last successful run (or first backfill start) minus 2 
 employment details (in-scope check) + job history → one SQL transaction replacing those employees' rows → event rebuild
 (if `rpt.usp_rebuild_events` exists). Runs are logged in `stage.sync_runs` (`rpt.v_sync_health`). A partial run (some employees
 failed) does not advance the window, so the next run retries them.
+
+**How UKG's change feed behaves** (measured 2026-11-25 with hourly and per-minute windows over ten days). `employee-changes`
+does not show a change when it is entered. A call *releases* the changes entered since the last release, at most once every
+3 hours for all callers together, and stamps them with the time of that call; the call that releases a batch does not
+receive it, because its `endDate` is before the stamp. Old batches can be read again with a window at any time. Flexspring
+calls the feed at 5:00, 8:00, 11:00 and 14:00 Toronto time, so those are the release times while it runs. Two consequences
+in the sync: it reads the feed twice, `HUB_FEED_SECOND_READ_SECONDS` apart, so a batch its own call released is picked up in
+the same run; and the timer runs 10 minutes after Flexspring instead of before it (a call 2 h 50 min after the last release
+cannot release, and only reads the previous batch). The 22:10 UTC run has no Flexspring call before it and releases the
+afternoon's changes itself. Do not call the feed by hand 3 hours or more after the last release unless you mean to release
+a batch. UKG's `dateTimeCreated` on job history is Eastern local time without a zone.
 
 ### Leave of absence (status history, not job history)
 UKG writes job history only for hires, terminations and rehires. A leave start or return is recorded in status history
@@ -125,6 +136,7 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `HUB_SQL_SERVER` | Hub SQL server | `sql-qsr-prod-cc.database.windows.net` |
 | `HUB_SQL_DATABASE` | Hub database | `sqldb-hrint` |
 | `HUB_LOOKBACK_MONTHS` | Scope for terminated employees | `24` |
+| `HUB_FEED_SECOND_READ_SECONDS` | Pause between the two reads of UKG's change feed in an intraday sync; `0` = one read, at most 300 | default `90` |
 | `HUB_SYNC_ENABLED` | Kill switch for the scheduled intraday sync AND the nightly job | `false` until the backfill finishes, then `true` |
 | `HUB_WORK_EMAIL_DOMAINS` | Domains treated as work email | `qsrgroup.ca` (default) |
 | `HUB_EMAIL_FIELDS` | UKG fields scanned for emails | default `emailAddress,alternateEmailAddress,emailAddressAlternate` |
@@ -207,6 +219,7 @@ Run manually in the Azure portal Query editor on `sqldb-hrint`; each is safe to 
 | `23-leave-periods.sql` | `stage.leave_periods` (leave of absence periods from UKG status history, dates only), `stage.usp_capture_status` (called by the syncs), `stage.usp_import_leave_periods` (LOA report load, `@dry_run = 1` to reconcile) and the purge updated to remove periods. Run before the updated 11; see [Leave of absence](#leave-of-absence-status-history-not-job-history) |
 | `25-destination-codes-rosnet.sql` | Rosnet code pairs: 36 W stores to location numbers, UKG jobs to Aloha job codes (the Flexspring lookup; `GMIT` = 650 like `GM`, HR decision 2026-11-18), termination categories to Rosnet termination codes (code 1 for everything, transfers included: HR decision 2026-11-18). Safe to rerun |
 | `26-rosnet-events.sql` | Event types Rosnet takes beyond script 13: `Pay change` (pay), `Leave of absence` (terminate), `Return from leave` (create), `Cross-company transfer out` (terminate) |
+| `28-entered-time-utc.sql` | Run after re-running the updated `11-usp-rebuild-events.sql`. UKG gives `dateTimeCreated` in Eastern local time with no zone; the procedure now converts it to UTC for `entered_utc`, and this script corrects the events built before (recomputed from `stage.job_history`, so a second run changes nothing). Queues no deliveries |
 | `27-profile-changes.sql` | Name and email changes of existing employees: `stage.profile_changes` (dates only), `stage.usp_capture_profile` (called by the syncs before employment and contacts are overwritten), the two event types `Name change` and `Email change` for both destinations as action `update`, grants. Run it, then rerun the updated `11-usp-rebuild-events.sql` (step 3c builds the events). Until then the syncs skip the capture |
 | `tools/loa-report-to-sql.py` | Converts the LOA History report export (.xlsx) into an `EXEC stage.usp_import_leave_periods` script holding employee numbers and dates only. `python -I loa-report-to-sql.py report.xlsx out.sql [--dry-run] [--no-rebuild]` |
 

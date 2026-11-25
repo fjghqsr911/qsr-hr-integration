@@ -3,6 +3,10 @@
 
   1. Window: from the end of the last successful intraday run (or the first backfill start), minus a 2-hour overlap.
   2. employee-changes for that window -> distinct employees (+ names, which this feed includes).
+     UKG does not show new changes in this feed as they are entered. A call "releases" them, at most once every
+     3 hours for all callers together, stamped with the time of that call, and the releasing call does not get them
+     (its endDate is before the stamp). So the feed is read twice, a short pause apart (secondReadMs): if the first
+     call released a batch, the second one returns it. Measured 2026-11-25; see the README.
   3. Per employee: employment details (all companies) -> in scope? (active / leave / terminated within lookback)
      -> job history. Out-of-scope employees are skipped; nothing about them is stored.
   4. One transaction: replace those employees' employment + job-history rows.
@@ -74,6 +78,10 @@ export interface SyncOptions {
   lookbackMonths: number;
   overlapHours?: number;
   log?: (msg: string) => void;
+  /** Pause before the second read of employee-changes, in ms (0 or missing = one read). See step 2 above. */
+  secondReadMs?: number;
+  /** Replaces the real pause (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface SyncResult {
@@ -82,6 +90,8 @@ export interface SyncResult {
   changeRecords?: number; employeesChanged?: number; employeesInScope?: number; employeesOutOfScope?: number;
   employeesFailed?: number; jobHistoryRows?: number; eventsRebuilt?: number | null; ukgCalls?: number; message?: string;
   contactsUpdated?: number; contactsRemoved?: number;
+  /** Employees only the second read of the feed returned (present when a second read was made). */
+  secondReadEmployees?: number;
 }
 
 // ---------------- helpers ----------------
@@ -231,18 +241,39 @@ export async function runIntradaySync(store: HubStore, ukg: UkgSource, opts: Syn
   const runId = await store.startRun("intraday", windowStart, windowEnd);
   try {
     const termMap = await store.termCodes();
-    const changes = await getAll<any>(`/personnel/v1/employee-changes?startDate=${encodeURIComponent(iso(windowStart))}&endDate=${encodeURIComponent(iso(windowEnd))}`, 200);
+    const feed = (end: Date) => getAll<any>(`/personnel/v1/employee-changes?startDate=${encodeURIComponent(iso(windowStart))}&endDate=${encodeURIComponent(iso(end))}`, 200);
+    const idOf = (c: any) => nz(c.employeeId) ?? nz(c.employeeID);
+    let changes = await feed(windowEnd);
+
+    // Second read (see step 2 in the header): same start, end = the time of this second call. Its answer replaces the
+    // first for the employees it has. The recorded window end stays the first call's; the next run's overlap covers it.
+    const pauseMs = opts.secondReadMs ?? 0;
+    let secondReadEmployees = 0;
+    if (pauseMs > 0) {
+      await (opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms))))(pauseMs);
+      try {
+        const again = await feed(opts.now ? new Date(now.getTime() + pauseMs) : new Date());
+        const first = new Set(changes.map(idOf));
+        const second = new Set(again.map(idOf));
+        secondReadEmployees = [...second].filter(id => id && !first.has(id)).length;
+        changes = [...again, ...changes.filter(c => !second.has(idOf(c)))];
+      } catch (e: any) {
+        if (e?.status === 401) throw e;                // stop: never retry bad credentials
+        log(`second read of employee-changes failed (${String(e?.message ?? "error").replace(/\?.*$/, "")}); continuing with the first`);
+      }
+    }
 
     const names = new Map<string, Names>();
     const changeRecs = new Map<string, any[]>();
     for (const c of changes) {
-      const id = nz(c.employeeId) ?? nz(c.employeeID);
+      const id = idOf(c);
       if (!id) continue;
       if (!names.has(id)) names.set(id, { first: nz(c.firstName), preferred: nz(c.preferredName), last: nz(c.lastName) });
       changeRecs.set(id, [...(changeRecs.get(id) ?? []), c]);
     }
     const ids = [...names.keys()];
-    log(`window ${iso(windowStart)} -> ${iso(windowEnd)}: ${changes.length} change records, ${ids.length} employees`);
+    log(`window ${iso(windowStart)} -> ${iso(windowEnd)}: ${changes.length} change records, ${ids.length} employees`
+      + (pauseMs > 0 ? `, ${secondReadEmployees} of them only in the second read` : ""));
 
     const c = await collectEmployees(ids, names, getAll, termMap, cutoff, log);
 
@@ -276,7 +307,7 @@ export async function runIntradaySync(store: HubStore, ukg: UkgSource, opts: Syn
       status, windowStart: iso(windowStart), windowEnd: iso(windowEnd), changeRecords: changes.length, employeesChanged: ids.length,
       employeesInScope: c.done.length, employeesOutOfScope: c.outOfScope, employeesFailed: c.failed.length,
       jobHistoryRows: c.jobHistory.length, eventsRebuilt: events, ukgCalls: calls,
-      contactsUpdated, contactsRemoved
+      contactsUpdated, contactsRemoved, ...(pauseMs > 0 ? { secondReadEmployees } : {})
     } as SyncResult;
   } catch (e: any) {
     const msg = String(e?.message ?? "error").replace(/\?.*$/, "");

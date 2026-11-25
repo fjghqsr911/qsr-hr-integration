@@ -44,6 +44,10 @@
   A hire, rehire or termination row produces only that event (its store, job and pay are the starting point).
   Blank values on either row never count as a change.
 
+  entered_utc of a job-history event = the row's UKG dateTimeCreated. UKG gives that in Eastern local time with no
+  zone (stage.job_history keeps it as given), so it is converted to UTC here (28-entered-time-utc.sql corrected the
+  events built before). A change of entered_utc alone never queues a delivery (step 5).
+
   event_key = SHA-256(employee | company | system_id | rule_applied): the same UKG record always gives the same key, so
   rebuilding is idempotent. Unchanged events are left alone (event_id and built_utc kept); connectors key on event_key.
 
@@ -144,7 +148,8 @@ BEGIN
 
     /* 3. One event per rule that fires */
     SELECT r.employee_id, r.company_id, v.rule_applied, LEFT(v.event_type, 40) AS event_type,
-           r.job_effective_date AS effective_date, r.date_time_created AS entered_utc,
+           r.job_effective_date AS effective_date,
+           CAST(r.date_time_created AT TIME ZONE 'Eastern Standard Time' AT TIME ZONE 'UTC' AS datetime2(0)) AS entered_utc,
            CASE WHEN v.rule_applied IN ('hire', 'rehire') THEN r.xfer_from_company ELSE r.company_id END AS from_company,
            CASE WHEN v.rule_applied = 'termination'       THEN NULL ELSE r.company_id END       AS to_company,
            CASE WHEN v.rule_applied IN ('hire', 'rehire') THEN r.xfer_from_store

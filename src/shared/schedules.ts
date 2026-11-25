@@ -1,8 +1,9 @@
 // The hub's two sync timers, in one place: hubSync.ts registers them and Diagnostics reports them, so what the monitor
 // compares its own settings against is exactly what is deployed. Times are UTC (Flex Consumption has no time zone setting).
 
-/** Intraday sync: 09:50, 12:50, 15:50, 18:50, 21:50 UTC (see hubSync.ts for why these times). */
-export const HUB_SYNC_CRON = "0 50 9,12,15,18,21 * * *";
+/** Intraday sync: 10:10, 13:10, 16:10, 19:10, 22:10 UTC, 10 minutes after Flexspring's calls release UKG's change feed
+ *  (see functions/hubSync.ts for why these times). */
+export const HUB_SYNC_CRON = "0 10 10,13,16,19,22 * * *";
 /** Nightly check: 06:15 UTC. */
 export const HUB_NIGHTLY_CRON = "0 15 6 * * *";
 

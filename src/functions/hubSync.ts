@@ -23,6 +23,7 @@ async function runSync(ctx: InvocationContext, trigger: string): Promise<SyncRes
     const result = await runIntradaySync(new SqlHubStore(pool), ukgSource, {
       lookbackMonths: config.hubLookbackMonths,
       contacts: contactConfig(),
+      secondReadMs: config.hubFeedSecondReadSeconds * 1000,
       log: (m) => ctx.log(`[hub-sync] ${m}`)          // counts and IDs only; never personal data
     });
     ctx.log(`[hub-sync] ${trigger}: ${JSON.stringify(result)}`);
@@ -57,12 +58,16 @@ export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string
 }
 
 // ---- Scheduled: 5x daily. Times are UTC (Flex Consumption has no time zone setting):
-//      09:50, 12:50, 15:50, 18:50, 21:50 UTC = 4:50, 7:50, 10:50, 13:50, 16:50 Toronto in winter (EST), one hour later
-//      in summer (EDT). Chosen 2026-11-23 to run 10 minutes BEFORE Flexspring, which sends to Clearview at 5:00, 8:00,
-//      11:00 and 14:00 Toronto time, so that during the parallel run our connector is the first to write. When the
-//      clocks change the runs fall 50 minutes AFTER Flexspring unless the hours are moved one earlier.
+//      10:10, 13:10, 16:10, 19:10, 22:10 UTC = 5:10, 8:10, 11:10, 14:10, 17:10 Toronto in winter (EST), one hour later
+//      in summer (EDT). UKG's employee-changes feed shows new changes only after a call releases them, at most every
+//      3 hours for all callers together. Flexspring calls it at 5:00, 8:00, 11:00 and 14:00 Toronto time, so a run
+//      10 minutes BEFORE Flexspring (the 2026-11-23 schedule) could never release and read only the previous batch,
+//      2 h 50 min late. Now the first four runs read the batch Flexspring released 10 minutes earlier, and the 22:10
+//      run, more than 3 hours after Flexspring's last call, releases the afternoon batch itself (the sync's second
+//      read picks it up). In summer the runs fall 70 minutes after Flexspring until the hours are moved one earlier.
+//      With Flexspring switched off, runs exactly 3 hours apart sit on the release limit: space them wider then.
 app.timer("hubSyncTimer", {
-  schedule: HUB_SYNC_CRON,              // "0 50 9,12,15,18,21 * * *" (src/shared/schedules.ts)
+  schedule: HUB_SYNC_CRON,              // "0 10 10,13,16,19,22 * * *" (src/shared/schedules.ts)
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-sync] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
     await runSyncThenDeliver(ctx, "timer");
