@@ -6,7 +6,9 @@
      UKG does not show new changes in this feed as they are entered. A call "releases" them, at most once every
      3 hours for all callers together, stamped with the time of that call, and the releasing call does not get them
      (its endDate is before the stamp). So the feed is read twice, a short pause apart (secondReadMs): if the first
-     call released a batch, the second one returns it. Measured 2026-11-25; see the README.
+     call released a batch, the second one returns it. Measured 2026-11-25; see the README. The timer also waits
+     a few minutes before a scheduled run, so that the first call is never exactly 3 hours after the hub's own
+     last release (feedStaggerMs in schedules.ts).
   3. Per employee: employment details (all companies) -> in scope? (active / leave / terminated within lookback)
      -> job history. Out-of-scope employees are skipped; nothing about them is stored.
   4. One transaction: replace those employees' employment + job-history rows.

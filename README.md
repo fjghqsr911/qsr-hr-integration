@@ -58,7 +58,7 @@ user endpoints.
 
 | Function | Trigger | What it does |
 |---|---|---|
-| `hubSyncTimer` | Timer, 10:10 / 13:10 / 16:10 / 19:10 / 22:10 **UTC** (5:10 / 8:10 / 11:10 / 14:10 / 17:10 Toronto in winter, one hour later in summer): 10 minutes after Flexspring's runs at 5, 8, 11 and 14 Toronto time release UKG's change feed, plus a late-afternoon run that releases it itself (see below). The monitor's `SYNC_HOURS_UTC` / `SYNC_MINUTE_UTC` must match | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
+| `hubSyncTimer` | Timer, 10:10 / 13:10 / 16:10 / 19:10 / 22:10 **UTC** (5:10 / 8:10 / 11:10 / 14:10 / 17:10 Toronto in winter, one hour later in summer): 10 minutes after Flexspring's runs at 5, 8, 11 and 14 Toronto time release UKG's change feed, plus a late-afternoon run that releases it itself (see below). Each run then waits 0 / 3 / 6 / 9 / 12 minutes before it calls UKG (`HUB_FEED_STAGGER_SECONDS`), so its rows in the sync history start at :10, :13, :16, :19 and :22. The monitor's `SYNC_HOURS_UTC` / `SYNC_MINUTE_UTC` must match | Intraday sync of UKG employee changes into `sqldb-hrint`. Does nothing unless `HUB_SYNC_ENABLED` = `true` |
 | `hubSyncRun` | `GET/POST /api/hub/sync` | Same sync on demand (testing, catch-up). Needs role `Summary.Admin` + scope `Employees.Summary.Write`, or app role `Integration.Run`. Runs even when the timer is disabled |
 | `clearviewConnectorTimer` | Timer, hourly at :30 | Drains `out.deliveries` for destination `clearview` (see [Clearview connector](#clearview-connector)). Does nothing unless `CLEARVIEW_ENABLED` = `true`. The timer is for retries, waiting deliveries and manual retries / queued events; new events do not wait for it, because the connector also runs right after every succeeded / partial intraday sync (`hubSyncTimer` / `hubSyncRun`) and nightly (`hubNightlyTimer` / `hubNightlyRun`) when enabled |
 | `clearviewRun` | `GET/POST /api/hub/clearview/run` | Same drain on demand; always allowed. Same permissions as `hubSyncRun`, audited |
@@ -80,7 +80,14 @@ calls the feed at 5:00, 8:00, 11:00 and 14:00 Toronto time, so those are the rel
 in the sync: it reads the feed twice, `HUB_FEED_SECOND_READ_SECONDS` apart, so a batch its own call released is picked up in
 the same run; and the timer runs 10 minutes after Flexspring instead of before it (a call 2 h 50 min after the last release
 cannot release, and only reads the previous batch). The 22:10 UTC run has no Flexspring call before it and releases the
-afternoon's changes itself. Do not call the feed by hand 3 hours or more after the last release unless you mean to release
+afternoon's changes itself. The limit is 3 hours almost to the second (measured 2026-11-27: a call 3 h 00 min 00 s after a
+release released nothing, one 3 h 01 min 08 s after did), and Flexspring's own calls miss it on some days, after which the
+hub's call is the one that releases. Runs exactly 3 hours apart fail from there: the first call lands on the limit, the
+second read releases, and nothing reads that batch until the next run. So each scheduled run waits before it starts, its
+position in the day times `HUB_FEED_STAGGER_SECONDS`: first calls at 10:10, 13:13, 16:16, 19:19 and 22:22 UTC, each
+3 h 03 min after the one before, with or without Flexspring. Keep that step at least 75 seconds above the second-read
+pause, so a run also recovers after a second read that did release. Flexspring's Rosnet integration calls the feed too,
+once a day at 1:00 Toronto time. Do not call the feed by hand 3 hours or more after the last release unless you mean to release
 a batch. UKG's `dateTimeCreated` on job history is Eastern local time without a zone.
 
 ### Leave of absence (status history, not job history)
@@ -137,6 +144,7 @@ next nightly run. Set `HUB_STORE_BIRTHDAY` = `false` to stop storing them (clear
 | `HUB_SQL_DATABASE` | Hub database | `sqldb-hrint` |
 | `HUB_LOOKBACK_MONTHS` | Scope for terminated employees | `24` |
 | `HUB_FEED_SECOND_READ_SECONDS` | Pause between the two reads of UKG's change feed in an intraday sync; `0` = one read, at most 300 | default `90` |
+| `HUB_FEED_STAGGER_SECONDS` | Wait before a scheduled intraday sync calls UKG's change feed, per position in the day (none for the first run, then 1x, 2x, 3x, 4x); `0` = no wait, at most 300. Keep it at least 75 s above `HUB_FEED_SECOND_READ_SECONDS`. The manual run does not wait | default `180` |
 | `HUB_SYNC_ENABLED` | Kill switch for the scheduled intraday sync AND the nightly job | `false` until the backfill finishes, then `true` |
 | `HUB_WORK_EMAIL_DOMAINS` | Domains treated as work email | `qsrgroup.ca` (default) |
 | `HUB_EMAIL_FIELDS` | UKG fields scanned for emails | default `emailAddress,alternateEmailAddress,emailAddressAlternate` |

@@ -55,6 +55,12 @@ export const config = {
     const n = parseInt(process.env.HUB_FEED_SECOND_READ_SECONDS ?? "90", 10);
     return Number.isFinite(n) && n >= 0 ? Math.min(n, 300) : 90;
   },
+  /** Wait before a scheduled intraday sync calls the feed, in seconds per position in the day (0 = no wait, at most
+   *  300). See feedStaggerMs in schedules.ts. */
+  get hubFeedStaggerSeconds() {
+    const n = parseInt(process.env.HUB_FEED_STAGGER_SECONDS ?? "180", 10);
+    return Number.isFinite(n) && n >= 0 ? Math.min(n, 300) : 180;
+  },
   /** Kill switch for the scheduled sync. Off unless explicitly "true". */
   get hubSyncEnabled() { return (process.env.HUB_SYNC_ENABLED ?? "").toLowerCase() === "true"; },
 

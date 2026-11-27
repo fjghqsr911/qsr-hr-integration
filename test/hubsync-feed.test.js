@@ -86,5 +86,24 @@ module.exports = async function run() {
     at(saved);
   });
 
+  await test("feed: a scheduled run waits by its position in the day (0, 3, 6, 9, 12 minutes at 180 s)", () => {
+    const { feedStaggerMs } = require(path.join(DIST, "shared", "schedules.js"));
+    const at = (h, step = 180, cron) => feedStaggerMs(new Date(Date.UTC(2026, 10, 27, h, 10, 0)), step, cron);
+    eq([10, 13, 16, 19, 22].map(h => at(h)), [0, 180_000, 360_000, 540_000, 720_000]);
+    eq([at(6), at(14), at(23)], [0, 0, 0], "not a sync hour: no wait");
+    eq([at(22, 0), at(22, -5)], [0, 0], "step 0 switches it off");
+    eq(at(13, 180, "0 */5 * * * *"), 0, "a cron of another shape: no wait");
+    const other = "0 50 21,9,15 * * *";                // position is by time of day, not by the order written
+    eq([at(9, 60, other), at(15, 60, other), at(21, 60, other)], [0, 60_000, 120_000]);
+  });
+
+  await test("feed: the stagger setting defaults to 180 s, accepts 0 and is capped at 300", () => {
+    const { config } = require(path.join(DIST, "shared", "config.js"));
+    const saved = process.env.HUB_FEED_STAGGER_SECONDS;
+    const at = (v) => { if (v === undefined) delete process.env.HUB_FEED_STAGGER_SECONDS; else process.env.HUB_FEED_STAGGER_SECONDS = v; return config.hubFeedStaggerSeconds; };
+    eq([at(undefined), at("0"), at("60"), at("9999"), at("abc"), at("-5")], [180, 0, 60, 300, 180, 180]);
+    at(saved);
+  });
+
   report("hubsync-feed");
 };

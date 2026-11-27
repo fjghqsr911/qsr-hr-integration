@@ -13,7 +13,7 @@ const contactConfig = (): ContactConfig => ({
 import { authorize, describeCaller, Roles, Scopes } from "../shared/auth";
 import { enabledDestinations, runConnector } from "../shared/connectors";
 import { runEntraSyncJob } from "../shared/entra/runner";
-import { HUB_SYNC_CRON, HUB_NIGHTLY_CRON } from "../shared/schedules";
+import { HUB_SYNC_CRON, HUB_NIGHTLY_CRON, feedStaggerMs } from "../shared/schedules";
 
 const ukgSource: UkgSource = { getAll: (path, perPage) => ukgGetAll(path, perPage, 500) };
 
@@ -58,18 +58,29 @@ export async function runSyncThenDeliver(ctx: InvocationContext, trigger: string
 }
 
 // ---- Scheduled: 5x daily. Times are UTC (Flex Consumption has no time zone setting):
-//      10:10, 13:10, 16:10, 19:10, 22:10 UTC = 5:10, 8:10, 11:10, 14:10, 17:10 Toronto in winter (EST), one hour later
-//      in summer (EDT). UKG's employee-changes feed shows new changes only after a call releases them, at most every
-//      3 hours for all callers together. Flexspring calls it at 5:00, 8:00, 11:00 and 14:00 Toronto time, so a run
-//      10 minutes BEFORE Flexspring (the 2026-11-23 schedule) could never release and read only the previous batch,
-//      2 h 50 min late. Now the first four runs read the batch Flexspring released 10 minutes earlier, and the 22:10
-//      run, more than 3 hours after Flexspring's last call, releases the afternoon batch itself (the sync's second
-//      read picks it up). In summer the runs fall 70 minutes after Flexspring until the hours are moved one earlier.
-//      With Flexspring switched off, runs exactly 3 hours apart sit on the release limit: space them wider then.
+//      the timer fires at 10:10, 13:10, 16:10, 19:10, 22:10 UTC = 5:10, 8:10, 11:10, 14:10, 17:10 Toronto in winter
+//      (EST), one hour later in summer (EDT). UKG's employee-changes feed shows new changes only after a call releases
+//      them, at most every 3 hours for all callers together. Flexspring calls it at 5:00, 8:00, 11:00 and 14:00
+//      Toronto time, so a run 10 minutes BEFORE Flexspring (the 2026-11-23 schedule) could never release and read only
+//      the previous batch, 2 h 50 min late. Now the first four runs read the batch Flexspring released 10 minutes
+//      earlier, and the last run, more than 3 hours after Flexspring's last call, releases the afternoon batch itself
+//      (the sync's second read picks it up).
+//      The limit is 3 hours almost to the second (measured 2026-11-27: a call 3 h 00 min 00 s after a release released
+//      nothing, one 3 h 01 min 08 s after did). Flexspring's own calls miss it on some days, and then the hub's call
+//      releases. Runs exactly 3 hours apart fail from there: the next first call lands on the limit, the second read
+//      releases instead, and nothing reads that batch until the next run. So each scheduled run first waits, by its
+//      position in the day times HUB_FEED_STAGGER_SECONDS (default 180): first calls at 10:10, 13:13, 16:16, 19:19 and
+//      22:22 UTC, each 3 h 03 min after the one before, with or without Flexspring. The manual run does not wait.
+//      In summer the runs fall 70 minutes after Flexspring until the hours are moved one earlier.
 app.timer("hubSyncTimer", {
   schedule: HUB_SYNC_CRON,              // "0 10 10,13,16,19,22 * * *" (src/shared/schedules.ts)
   handler: async (_timer: Timer, ctx: InvocationContext) => {
     if (!config.hubSyncEnabled) { ctx.log("[hub-sync] disabled (HUB_SYNC_ENABLED is not 'true') - skipping"); return; }
+    const waitMs = feedStaggerMs(new Date(), config.hubFeedStaggerSeconds);
+    if (waitMs > 0) {
+      ctx.log(`[hub-sync] waiting ${waitMs / 1000} s before the feed call (HUB_FEED_STAGGER_SECONDS)`);
+      await new Promise<void>(r => setTimeout(r, waitMs));
+    }
     await runSyncThenDeliver(ctx, "timer");
   }
 });
